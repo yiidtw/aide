@@ -15,6 +15,18 @@ pub struct AgentfileSpec {
     pub seed: Option<SeedSection>,
     #[serde(default)]
     pub env: Option<EnvSection>,
+    #[serde(default)]
+    pub soul: Option<SoulSection>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SoulSection {
+    /// Preferred local model for daemon mode (e.g. "llama3.2:3b")
+    #[serde(default)]
+    pub prefer: Option<String>,
+    /// Minimum model size (e.g. "1b")
+    #[serde(default)]
+    pub min_params: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +59,12 @@ pub struct SkillDef {
     /// If set, ONLY these vars are injected when this skill runs.
     #[serde(default)]
     pub env: Option<Vec<String>>,
+    /// Human-readable description of what this skill does
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Usage string for --help (e.g. "lms [courses|assignments|grades]")
+    #[serde(default)]
+    pub usage: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +160,65 @@ impl AgentfileSpec {
         }
 
         Ok(warnings)
+    }
+
+    /// Generate --help output for `aide.sh exec <instance> --help`
+    pub fn format_help(&self, instance_name: &str) -> String {
+        let mut out = String::new();
+
+        // Header
+        out.push_str(&format!(
+            "{} ({}:{})\n",
+            instance_name,
+            self.agent.name,
+            self.agent.version
+        ));
+        if let Some(desc) = &self.agent.description {
+            out.push_str(&format!("  {}\n", desc));
+        }
+
+        // Skills
+        if !self.skills.is_empty() {
+            out.push_str("\nSkills:\n");
+
+            let mut names: Vec<&String> = self.skills.keys().collect();
+            names.sort();
+
+            for name in names {
+                let skill = &self.skills[name];
+
+                // Usage line or just name
+                let usage = skill
+                    .usage
+                    .as_deref()
+                    .unwrap_or(name.as_str());
+                out.push_str(&format!("  {}\n", usage));
+
+                // Description
+                if let Some(desc) = &skill.description {
+                    out.push_str(&format!("      {}\n", desc));
+                }
+
+                // Env vars
+                if let Some(env) = &skill.env {
+                    if !env.is_empty() {
+                        out.push_str(&format!("      env: {}\n", env.join(", ")));
+                    }
+                }
+
+                out.push('\n');
+            }
+        }
+
+        // Semantic mode hint
+        out.push_str("Semantic mode:\n");
+        out.push_str(&format!(
+            "  aide.sh exec -p {} \"<natural language query>\"\n",
+            instance_name
+        ));
+        out.push_str("  (requires LLM runtime — ollama or MCP caller)\n");
+
+        out
     }
 
     /// Full archive name: <name>-<version>.tar.gz

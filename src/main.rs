@@ -5,6 +5,7 @@ mod config;
 mod daemon;
 mod dispatch;
 mod email;
+mod mcp;
 mod sync;
 mod vault;
 
@@ -168,6 +169,20 @@ enum Command {
         target: SyncTarget,
     },
 
+    /// Initialize a new agent project scaffold
+    Init {
+        /// Agent name
+        name: String,
+    },
+    /// Validate an Agentfile.toml (lint checks)
+    Lint {
+        /// Path to agent directory (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Start MCP stdio server for LLM tool integration
+    Mcp,
+
     // ─── Hidden aliases for backward compat ───
 
     /// Alias for 'run'
@@ -268,6 +283,12 @@ async fn main() -> Result<()> {
         Command::Login => return cmd_login().await,
         Command::Search { query } => return cmd_search(query).await,
         Command::Images => return cmd_images(),
+        Command::Init { name } => return cmd_init(name),
+        Command::Lint { path } => return cmd_lint(path),
+        Command::Mcp => {
+            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+            return mcp::run_mcp_server(&config.aide.data_dir);
+        }
         _ => {}
     }
 
@@ -394,7 +415,10 @@ async fn main() -> Result<()> {
         | Command::Push { .. }
         | Command::Pull { .. }
         | Command::Login
-        | Command::Search { .. } => unreachable!(),
+        | Command::Search { .. }
+        | Command::Init { .. }
+        | Command::Lint { .. }
+        | Command::Mcp => unreachable!(),
     }
 
     Ok(())
@@ -568,6 +592,18 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
     let manifest = mgr
         .get(instance)?
         .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
+
+    // Handle --help: show available skills from Agentfile
+    if skill == "--help" || skill == "-h" || skill.is_empty() {
+        let inst_dir = mgr.base_dir().join(instance);
+        if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
+            print!("{}", spec.format_help(instance));
+        } else {
+            println!("{} (no Agentfile.toml — skill discovery unavailable)", instance);
+            println!("\nUsage: aide.sh exec {} <skill> [args...]", instance);
+        }
+        return Ok(());
+    }
 
     // Parse skill input
     let parts: Vec<&str> = skill.splitn(2, ' ').collect();
@@ -951,6 +987,7 @@ fn return_empty_spec() -> AgentfileSpec {
         skills: std::collections::HashMap::new(),
         seed: None,
         env: None,
+        soul: None,
     }
 }
 
@@ -1216,6 +1253,33 @@ fn scan_for_leaks(dir: &Path) -> Result<Vec<String>> {
 
     walk(dir, &secret_prefixes, &mut leaks)?;
     Ok(leaks)
+}
+
+// ─── Init / Lint ───
+
+fn cmd_init(name: &str) -> Result<()> {
+    let dir = Path::new(name);
+    if dir.exists() {
+        bail!("directory '{}' already exists", name);
+    }
+    agents::scaffold::init_agent(name, dir)?;
+    println!("created {}/", name);
+    println!("  Agentfile.toml");
+    println!("  persona.md");
+    println!("  skills/hello.sh");
+    println!("  seed/");
+    println!();
+    println!("next: edit Agentfile.toml, then `aide.sh build {}/`", name);
+    Ok(())
+}
+
+fn cmd_lint(dir: &Path) -> Result<()> {
+    let result = agents::lint::lint_agent(dir)?;
+    agents::lint::print_lint_result(&result);
+    if !result.errors.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 // ─── Build / Push / Pull / Login / Search ───

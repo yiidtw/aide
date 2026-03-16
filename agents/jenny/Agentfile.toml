@@ -9,23 +9,33 @@ file = "persona.md"
 
 [skills.cool]
 script = "skills/cool.sh"
+description = "NTU COOL LMS scanning (courses, assignments, grades)"
+usage = "cool [courses|assignments|grades|todos|summary|scan]"
 schedule = "0 8 * * *"
 env = ["NTU_COOL_TOKEN"]
 
 [skills.email]
 script = "skills/email.sh"
+description = "Email triage (POP3/SMTP)"
+usage = "email [check|unread|read N|search Q|send TO SUBJ BODY]"
 schedule = "0 */4 * * *"
 env = ["SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS", "EMAIL_USER", "EMAIL_PASS", "EMAIL_DOMAIN", "POP3_HOST", "SMTP_HOST"]
 
 [skills.easychair]
 script = "skills/easychair.sh"
+description = "EasyChair conference management"
+usage = "easychair [status|submissions|reviews]"
 env = ["EASYCHAIR_USER", "EASYCHAIR_PASS", "EASYCHAIR_CONF_ID", "EASYCHAIR_EMAIL"]
 
 [skills.chrome]
 script = "skills/chrome.sh"
+description = "Chrome browser automation"
+usage = "chrome [open|screenshot|scrape URL]"
 
 [skills.judgeboi]
 script = "skills/judgeboi.sh"
+description = "Online judge submission checker"
+usage = "judgeboi [status|submit|history]"
 
 [seed]
 dir = "seed/"

@@ -229,6 +229,11 @@ enum VaultAction {
     Import {
         path: PathBuf,
     },
+    /// Set one or more secrets: KEY=VALUE [KEY2=VALUE2 ...]
+    Set {
+        /// Key=value pairs
+        pairs: Vec<String>,
+    },
     /// Rotate vault key (re-encrypt with new keypair)
     Rotate,
     /// Show vault status
@@ -361,9 +366,11 @@ async fn main() -> Result<()> {
             match action {
                 VaultAction::Import { path } => {
                     v.import_env(&path).await?;
-                    // Fix key permissions after import
                     fix_vault_key_permissions(&v.identity_path());
                     println!("imported {} → {}", path.display(), vault_path);
+                }
+                VaultAction::Set { pairs } => {
+                    cmd_vault_set(&v, &pairs).await?;
                 }
                 VaultAction::Rotate => {
                     cmd_vault_rotate(&v, &vault_path).await?;
@@ -1114,6 +1121,103 @@ async fn cmd_vault_set_token(v: &vault::Vault, username: &str, token: &str) -> R
     Ok(())
 }
 
+/// `aide.sh vault set KEY=VALUE [KEY2=VALUE2 ...]`
+async fn cmd_vault_set(v: &vault::Vault, pairs: &[String]) -> Result<()> {
+    if pairs.is_empty() {
+        bail!("Usage: aide.sh vault set KEY=VALUE [KEY2=VALUE2 ...]");
+    }
+
+    // Parse pairs
+    let mut new_vars: Vec<(String, String)> = Vec::new();
+    for pair in pairs {
+        let (key, val) = pair.split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("invalid format '{}' — expected KEY=VALUE", pair))?;
+        new_vars.push((key.to_string(), val.to_string()));
+    }
+
+    // Init vault if needed
+    v.init().await?;
+    fix_vault_key_permissions(&v.identity_path());
+
+    // Load existing or start fresh
+    let mut content = match v.decrypt().await {
+        Ok(data) => String::from_utf8(data)?,
+        Err(_) => String::new(),
+    };
+
+    // Upsert each key
+    for (key, val) in &new_vars {
+        // Remove old line if exists
+        let lines: Vec<&str> = content.lines()
+            .filter(|l| {
+                let l = l.strip_prefix("export ").unwrap_or(l);
+                !l.starts_with(&format!("{}=", key))
+            })
+            .collect();
+        content = lines.join("\n");
+        if !content.ends_with('\n') && !content.is_empty() { content.push('\n'); }
+        content.push_str(&format!("export {}='{}'\n", key, val));
+    }
+
+    v.encrypt(content.as_bytes()).await?;
+
+    for (key, _) in &new_vars {
+        println!("  set {}", key);
+    }
+    println!("{} secret(s) stored in vault", new_vars.len());
+    Ok(())
+}
+
+/// Scan files for potential credential leaks before push
+fn scan_for_leaks(dir: &Path) -> Result<Vec<String>> {
+    // Simple prefix-based detection (no regex needed)
+    let secret_prefixes = [
+        "sk-ant-",     // Anthropic
+        "sk-proj-",    // OpenAI
+        "AKIA",        // AWS
+        "ghp_",        // GitHub PAT
+        "gho_",        // GitHub OAuth
+        "eyJhbG",      // JWT
+        "-----BEGIN",  // PEM keys
+    ];
+
+    let mut leaks = Vec::new();
+
+    fn walk(dir: &Path, prefixes: &[&str], leaks: &mut Vec<String>) -> Result<()> {
+        if !dir.is_dir() { return Ok(()); }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, prefixes, leaks)?;
+            } else {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ["gz", "tar", "zip", "png", "jpg", "bin", "age"].contains(&ext) {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (line_num, line) in content.lines().enumerate() {
+                        for prefix in prefixes {
+                            if line.contains(prefix) {
+                                leaks.push(format!(
+                                    "  {}:{}: possible secret ({}...)",
+                                    path.strip_prefix(dir).unwrap_or(&path).display(),
+                                    line_num + 1,
+                                    prefix
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    walk(dir, &secret_prefixes, &mut leaks)?;
+    Ok(leaks)
+}
+
 // ─── Build / Push / Pull / Login / Search ───
 
 fn aide_home() -> PathBuf {
@@ -1139,6 +1243,16 @@ fn cmd_build(dir: &Path) -> Result<()> {
     let warnings = spec.validate(&dir)?;
     for w in &warnings {
         println!("  warn: {}", w);
+    }
+
+    // Scan for credential leaks before building
+    let leaks = scan_for_leaks(&dir)?;
+    if !leaks.is_empty() {
+        eprintln!("BLOCKED: potential secrets detected in agent files:");
+        for leak in &leaks {
+            eprintln!("  {}", leak);
+        }
+        bail!("Fix leaks before building. Never include API keys, tokens, or passwords in agent files.");
     }
 
     println!(

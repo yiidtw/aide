@@ -71,26 +71,6 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
 
-  deploy-site:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: yiidtw/aide-site
-          path: aide-site
-
-      - name: Deploy to Vercel
-        run: |
-          cd aide-site
-          npm install -g vercel
-          vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-          vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-          vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-
   update-hub-binaries:
     needs: build
     runs-on: ubuntu-latest

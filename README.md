@@ -81,6 +81,76 @@ aide.sh vault set SLACK_WEBHOOK=https://hooks.slack.com/...
 aide.sh vault list
 ```
 
+## Publish Your Agent
+
+### 1. Create the agent directory and manifest
+
+```bash
+mkdir -p my-agent/skills
+cat > my-agent/Agentfile.toml << 'EOF'
+[agent]
+name = "my-agent"
+version = "0.1.0"
+description = "A helpful assistant that summarizes web pages"
+author = "yourname"
+
+[persona]
+file = "persona.md"
+
+[skills.summarize]
+script = "skills/summarize.sh"
+env = ["API_KEY"]
+
+[env]
+required = ["API_KEY"]
+EOF
+```
+
+### 2. Write the persona
+
+```bash
+cat > my-agent/persona.md << 'EOF'
+You are a concise summarization assistant.
+When given a URL or block of text, return a clear three-sentence summary.
+EOF
+```
+
+### 3. Write skill scripts
+
+```bash
+cat > my-agent/skills/summarize.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# $1 = URL or text to summarize
+echo "Summarizing: $1"
+EOF
+chmod +x my-agent/skills/summarize.sh
+```
+
+### 4. Build the image
+
+```bash
+aide.sh build my-agent
+```
+
+The build step runs a leak scanner that rejects images containing hard-coded
+secrets (API keys, tokens, passwords). If the scan fails, move the secret
+into the vault instead.
+
+### 5. Log in and push
+
+```bash
+aide.sh login
+aide.sh push yourname/my-agent
+```
+
+Your agent is now live on [hub.aide.sh](https://hub.aide.sh) and anyone can
+`aide.sh pull yourname/my-agent`.
+
+> **Important:** Never embed secrets in `Agentfile.toml`, `persona.md`, or
+> skill scripts. Use `aide.sh vault set KEY=value` to store credentials and
+> reference them through the `env` field in your Agentfile.
+
 ## Links
 
 - **Website**: [aide.sh](https://aide.sh)

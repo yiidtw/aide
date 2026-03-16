@@ -178,7 +178,7 @@ echo ""
 yellow "5. System Info (aide.sh info)"
 assert_contains "info shows instances" "$AIDE info" "Agent Instances"
 assert_contains "info shows vault" "$AIDE info" "Vault"
-assert_contains "info shows registry" "$AIDE info" "registry"
+assert_contains "info shows registry" "$AIDE info" "Registry"
 
 # ─── 6. Registry Backend ───
 echo ""

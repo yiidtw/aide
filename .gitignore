@@ -1,0 +1,14 @@
+/target
+*.age
+*.enc
+*.key
+*.pem
+.env
+.env.*
+auth.json
+registry-tokens.json
+credentials*
+aide.toml
+constitution.private/
+AGENTS.md
+.playwright-mcp/

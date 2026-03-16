@@ -1,0 +1,50 @@
+# aide.sh configuration example
+# Copy to aide.toml and customize for your setup
+
+[aide]
+name = "aide.sh"
+data_dir = "~/.aide/data"
+vault_path = "~/.aide/vault.age"
+
+[machines.local]
+host = "localhost"
+role = "dev"
+always_on = false
+
+[machines.server]
+host = "your-server.example.com"
+role = "prod"
+always_on = true
+
+[dispatch]
+email_poll      = { on = "server" }
+email_send      = { on = "any" }
+skill_dev       = { on = "local" }
+deploy          = { on = "server" }
+llm_inference   = { on = "any", prefer = "server" }
+
+[sync.vault]
+method = "age+push"
+trigger = "on-change"
+targets = ["server"]
+
+[sync.skills]
+method = "git"
+repo = "your-org/aide-skills"
+auto_pull = true
+
+[sync.memory]
+method = "amem"
+conflict = "causal"
+
+# === Agent types ===
+
+[agents.assistant]
+email = "assistant@aide.sh"
+role = "General-purpose assistant"
+domains = []
+
+[agents.researcher]
+email = "researcher@aide.sh"
+role = "Research and literature review"
+domains = []

@@ -1,0 +1,35 @@
+[agent]
+name = "jenny"
+version = "0.1.0"
+description = "NTU GIEE PhD student assistant — school work, email, course management"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.cool]
+script = "skills/cool.sh"
+schedule = "0 8 * * *"
+env = ["NTU_COOL_TOKEN"]
+
+[skills.email]
+script = "skills/email.sh"
+schedule = "0 */4 * * *"
+env = ["SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS", "EMAIL_USER", "EMAIL_PASS", "EMAIL_DOMAIN", "POP3_HOST", "SMTP_HOST"]
+
+[skills.easychair]
+script = "skills/easychair.sh"
+env = ["EASYCHAIR_USER", "EASYCHAIR_PASS", "EASYCHAIR_CONF_ID", "EASYCHAIR_EMAIL"]
+
+[skills.chrome]
+script = "skills/chrome.sh"
+
+[skills.judgeboi]
+script = "skills/judgeboi.sh"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = ["NTU_COOL_TOKEN"]
+optional = ["EASYCHAIR_USER", "EASYCHAIR_PASS", "EASYCHAIR_CONF_ID", "EASYCHAIR_EMAIL", "SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS", "EMAIL_USER", "EMAIL_PASS", "EMAIL_DOMAIN", "POP3_HOST", "SMTP_HOST"]

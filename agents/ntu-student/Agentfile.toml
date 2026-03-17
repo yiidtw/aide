@@ -1,0 +1,29 @@
+[agent]
+name = "ntu-student"
+version = "0.1.0"
+description = "NTU student assistant — COOL LMS + NTU mail"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.cool]
+script = "skills/cool.sh"
+description = "NTU COOL (Canvas LMS) — courses, assignments, grades, announcements"
+usage = "cool [courses|assignments|grades|todos|summary|announcements|scan]"
+schedule = "0 8 * * *"
+env = ["NTU_COOL_TOKEN"]
+
+[skills.mail]
+script = "skills/mail.sh"
+description = "NTU mail — check inbox, read, search, send"
+usage = "mail [check|unread|read N|search Q|send TO SUBJ BODY]"
+schedule = "0 */4 * * *"
+env = ["EMAIL_USER", "EMAIL_PASS", "POP3_HOST", "SMTP_HOST"]
+
+[seed]
+dir = "seed/"
+
+[env]
+required = ["NTU_COOL_TOKEN"]
+optional = ["EMAIL_USER", "EMAIL_PASS", "POP3_HOST", "SMTP_HOST", "EMAIL_DOMAIN", "SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS"]

@@ -2,68 +2,51 @@
 
 aide.sh includes a built-in web dashboard for monitoring agents.
 
-## Standalone mode
+![aide.sh dashboard](../images/dash-jenny.png)
+
+## Quick start
 
 ```bash
-$ aide.sh dash
-Dashboard running at http://localhost:3939
+aide.sh dash                  # standalone dashboard
+aide.sh up                    # daemon + cron + dashboard
+aide.sh up --no-dash          # daemon without dashboard
 ```
 
-Opens a web UI showing all running instances, recent logs, and skill execution history. Press `Ctrl+C` to stop.
+Dashboard serves at `http://localhost:3939`.
 
-## Daemon mode
+## Panels
 
-When running the daemon, the dashboard is included by default:
+- **Instances** — sidebar listing all agents with status dots (green = active)
+- **Skills** — table with name, description, cron schedule, env vars
+- **Cron Jobs** — schedule, skill name, last run time
+- **Usage** — per-skill execution bars with success/fail ratio, CLI vs MCP breakdown
+- **Logs** — real-time log tail with auto-refresh (3s polling)
+
+## API
 
 ```bash
-$ aide.sh up
-Daemon started (PID 12345)
-Dashboard: http://localhost:3939
-Cron scheduler: active
+# List all instances
+curl http://localhost:3939/api/instances
+
+# Instance detail (skills, cron, metadata)
+curl http://localhost:3939/api/instance/jenny.ydwu
+
+# Logs (latest N lines)
+curl http://localhost:3939/api/logs/jenny.ydwu?tail=50
+
+# Usage analytics
+curl http://localhost:3939/api/stats/jenny.ydwu
 ```
 
-To run the daemon without the dashboard:
+## Stats response
 
-```bash
-$ aide.sh up --no-dash
-Daemon started (PID 12345)
-Cron scheduler: active
-```
-
-## Dashboard UI
-
-The dashboard displays:
-
-- **Instances panel** — list of running agents with status (running / stopped / error)
-- **Logs panel** — real-time log stream for all instances, filterable by instance name
-- **Skills panel** — per-instance skill list with last execution time, exit code, and duration
-- **Cron panel** — scheduled skills with next run time and execution history
-- **Vault panel** — secret names and last-set dates (values are never shown)
-
-## API endpoints
-
-The dashboard exposes a REST API on the same port:
-
-```bash
-# List instances
-$ curl http://localhost:3939/api/instances
-[{"name": "jenny", "image": "jenny:0.1.0", "status": "running"}]
-
-# Get logs
-$ curl http://localhost:3939/api/instances/jenny/logs?limit=50
-
-# Execute a skill
-$ curl -X POST http://localhost:3939/api/instances/jenny/exec \
-  -H "Content-Type: application/json" \
-  -d '{"skill": "cool", "args": ["courses"]}'
-
-# Cron status
-$ curl http://localhost:3939/api/cron
-```
-
-## Stopping the daemon
-
-```bash
-$ aide.sh down
-Daemon stopped.
+```json
+{
+  "total_execs": 12,
+  "by_skill": {
+    "cool": { "count": 9, "success": 9, "fail": 0 },
+    "email": { "count": 1, "success": 1, "fail": 0 }
+  },
+  "by_source": { "cli": 12, "mcp": 0 }
+}
 ```

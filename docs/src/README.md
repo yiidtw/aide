@@ -26,10 +26,13 @@ aide.sh exec -p bot "what's up?"    # semantic — AI drives
 
 # monitor
 aide.sh dash                        # web dashboard at localhost:3939
-
-# expose to mobile
-aide.sh expose bot telegram --token $TG_TOKEN
 ```
+
+## Dashboard
+
+![aide.sh dashboard](./images/dash-jenny.png)
+
+Built-in observability. See every agent's skills, cron jobs, usage analytics, and logs — all in one place.
 
 ## Next steps
 

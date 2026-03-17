@@ -21,9 +21,16 @@ usage = "mail [check|unread|read N|search Q|send TO SUBJ BODY]"
 schedule = "0 */4 * * *"
 env = ["EMAIL_USER", "EMAIL_PASS", "POP3_HOST", "SMTP_HOST"]
 
+[skills.briefing]
+script = "skills/briefing.sh"
+description = "Daily briefing — scan todos + assignments, email summary"
+usage = "briefing [EMAIL]"
+schedule = "0 7 * * *"
+env = ["NTU_COOL_TOKEN", "RESEND_API_KEY"]
+
 [seed]
 dir = "seed/"
 
 [env]
 required = ["NTU_COOL_TOKEN"]
-optional = ["EMAIL_USER", "EMAIL_PASS", "POP3_HOST", "SMTP_HOST", "EMAIL_DOMAIN", "SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS"]
+optional = ["EMAIL_USER", "EMAIL_PASS", "POP3_HOST", "SMTP_HOST", "EMAIL_DOMAIN", "SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS", "RESEND_API_KEY", "BRIEFING_TO"]

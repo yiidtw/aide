@@ -27,8 +27,8 @@ aide.sh build [PATH] [-t TAG]
 ### Example
 
 ```bash
-aide.sh build agents/jenny/
-aide.sh build . -t jenny:0.2.0
+aide.sh build agents/reviewer/
+aide.sh build . -t github-reviewer:0.2.0
 ```
 
 ## aide.sh push
@@ -68,8 +68,8 @@ aide.sh pull <USER>/<TYPE>[:VERSION]
 ### Example
 
 ```bash
-aide.sh pull ydwu/school-assistant
-aide.sh pull ydwu/school-assistant:0.1.0
+aide.sh pull aide/github-reviewer
+aide.sh pull aide/github-reviewer:0.1.0
 ```
 
 ## Related commands

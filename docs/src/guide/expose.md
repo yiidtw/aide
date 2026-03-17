@@ -16,14 +16,14 @@ Both channels are platform-controlled — aide.sh manages the infra, not third-p
 Every agent gets an email address:
 
 ```
-jenny+ydwu@aide.sh
+reviewer+demo@aide.sh
 ```
 
 ### How it works
 
-1. Anyone sends an email to `jenny+ydwu@aide.sh`
+1. Anyone sends an email to `reviewer+demo@aide.sh`
 2. Cloudflare Email Worker receives the message
-3. Routes to agent: `aide.sh exec -p jenny.ydwu "<email body>"`
+3. Routes to agent: `aide.sh exec -p reviewer.demo "<email body>"`
 4. Agent runs matching skills
 5. Reply sent back via Resend/SMTP
 
@@ -38,7 +38,7 @@ jenny+ydwu@aide.sh
 A chat interface at `app.aide.sh`:
 
 ```
-app.aide.sh/jenny.ydwu → chat UI → WebSocket → aide.sh exec
+app.aide.sh/reviewer.demo → chat UI → WebSocket → aide.sh exec
 ```
 
 ### Features
@@ -55,10 +55,10 @@ the MCP server or direct `aide.sh exec` calls:
 
 ```bash
 # Your own Telegram bot
-your-telegram-bot → aide.sh exec -p jenny.ydwu "message"
+your-telegram-bot → aide.sh exec -p reviewer.demo "message"
 
 # Your own Discord bot
-your-discord-bot → aide.sh exec -p jenny.ydwu "message"
+your-discord-bot → aide.sh exec -p reviewer.demo "message"
 
 # Any webhook
 curl -X POST your-server/agent -d "message" → aide.sh exec

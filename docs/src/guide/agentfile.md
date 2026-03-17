@@ -6,27 +6,27 @@ The Agentfile is the manifest that defines an agent. It is always named `Agentfi
 
 ```toml
 [agent]
-name = "jenny"
+name = "github-reviewer"
 version = "0.1.0"
-description = "NTU GIEE PhD student assistant — school work, email, course management"
-author = "ydwu"
+description = "GitHub PR reviewer — diffs, notifications, code review"
+author = "demo"
 
 [persona]
 file = "persona.md"
 
-[skills.cool]
-script = "skills/cool.sh"
-description = "NTU COOL LMS scanning (courses, assignments, grades)"
-usage = "cool [courses|assignments|grades|todos|summary|scan]"
+[skills.pr]
+script = "skills/pr.sh"
+description = "GitHub PR management (list, review, approve, merge)"
+usage = "pr [list|review|approve|merge|summary|diff]"
 schedule = "0 8 * * *"
-env = ["NTU_COOL_TOKEN"]
+env = ["GITHUB_TOKEN"]
 
-[skills.email]
-script = "skills/email.sh"
-description = "Email triage (POP3/SMTP)"
-usage = "email [check|unread|read N|search Q|send TO SUBJ BODY]"
+[skills.notifications]
+script = "skills/notifications.sh"
+description = "GitHub notifications triage"
+usage = "notifications [check|unread|read N|search Q]"
 schedule = "0 */4 * * *"
-env = ["SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS"]
+env = ["GITHUB_TOKEN"]
 
 [skills.chrome]
 script = "skills/chrome.sh"
@@ -37,8 +37,8 @@ usage = "chrome [open|screenshot|scrape URL]"
 dir = "seed/"
 
 [env]
-required = ["NTU_COOL_TOKEN"]
-optional = ["SMTP_USER", "SMTP_PASS", "POP3_USER", "POP3_PASS"]
+required = ["GITHUB_TOKEN"]
+optional = []
 
 [soul]
 prefer = "claude-sonnet"
@@ -109,5 +109,5 @@ Run `aide.sh lint <dir>` to check an Agentfile for errors before building:
 $ aide.sh lint school/
 Agentfile.toml: OK
 Skills: 3 found, all scripts exist
-Env: NTU_COOL_TOKEN required
+Env: GITHUB_TOKEN required
 ```

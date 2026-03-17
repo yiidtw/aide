@@ -64,10 +64,10 @@ The `description` and `usage` fields appear when listing skills:
 ```bash
 $ aide.sh exec bot
 Available skills:
-  cool       NTU COOL LMS scanning (courses, assignments, grades)
-             Usage: cool [courses|assignments|grades|todos|summary|scan]
-  email      Email triage (POP3/SMTP)
-             Usage: email [check|unread|read N|search Q|send TO SUBJ BODY]
+  pr         GitHub PR management (list, review, approve, merge)
+             Usage: pr [list|review|approve|merge|summary|diff]
+  notifications  GitHub notifications triage
+             Usage: notifications [check|unread|read N|search Q]
   chrome     Chrome browser automation
              Usage: chrome [open|screenshot|scrape URL]
 ```
@@ -76,22 +76,22 @@ Available skills:
 
 ```bash
 #!/usr/bin/env bash
-# skills/cool.sh
+# skills/pr.sh
 set -euo pipefail
 
 CMD="${1:-help}"
 
 case "$CMD" in
-  courses)
-    curl -s -H "Authorization: Bearer $NTU_COOL_TOKEN" \
-      "https://cool.ntu.edu.tw/api/v1/courses" | jq '.[].name'
+  list)
+    curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+      "https://api.github.com/repos/${2}/pulls" | jq '.[].title'
     ;;
-  assignments)
-    curl -s -H "Authorization: Bearer $NTU_COOL_TOKEN" \
-      "https://cool.ntu.edu.tw/api/v1/courses/${2}/assignments" | jq '.[]'
+  diff)
+    curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+      "https://api.github.com/repos/${2}/pulls/${3}" | jq '.[]'
     ;;
   *)
-    echo "Usage: cool [courses|assignments COURSE_ID|grades|todos|summary|scan]"
+    echo "Usage: pr [list REPO|diff REPO PR_NUM|review|approve|merge|summary]"
     exit 1
     ;;
 esac
@@ -102,8 +102,8 @@ esac
 Add a `schedule` field with a cron expression to run a skill periodically:
 
 ```toml
-[skills.cool]
-script = "skills/cool.sh"
+[skills.pr]
+script = "skills/pr.sh"
 schedule = "0 8 * * *"    # daily at 8 AM
 ```
 

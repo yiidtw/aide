@@ -7,8 +7,8 @@ aide.sh agents have three execution modes. Same agent, same skills — different
 ### 1. Ad-hoc (no LLM)
 
 ```bash
-aide.sh exec school cool courses
-aide.sh exec school mail unread
+aide.sh exec school pr list
+aide.sh exec school notifications
 ```
 
 Human directly calls a skill by name. Script runs, output returns. No AI involved.
@@ -18,7 +18,7 @@ This is like calling a Docker container's command directly.
 
 ```
 Claude Code / Codex / Gemini
-  └── MCP: aide_exec(school, cool, courses)
+  └── MCP: aide_exec(school, pr, list)
 ```
 
 A frontier CLI model controls the agent via MCP. The caller's LLM decides what

@@ -60,14 +60,14 @@ Once configured, the LLM host sees these tools:
 After setup, Claude Code can use your agents directly:
 
 ```
-User: "Check if I have any new assignments on COOL"
+User: "Check if I have any PRs to review"
 
-Claude: I'll check your COOL LMS for new assignments.
-        [calling aide_exec: instance="jenny", skill="cool", args=["assignments"]]
+Claude: I'll check your GitHub PRs.
+        [calling aide_exec: instance="reviewer", skill="pr", args=["list"]]
 
-        You have 2 new assignments:
-        - VLSI Design: HW3 due 2025-06-15
-        - ML Lab: Final project proposal due 2025-06-20
+        You have 2 PRs awaiting review:
+        - Fix auth middleware: PR #42 by alice
+        - Add pagination: PR #58 by bob
 ```
 
 The LLM discovers available skills via `aide_list`, picks the right one, and calls `aide_exec`.
@@ -87,14 +87,14 @@ Check that instances are running:
 
 ```bash
 $ aide.sh ps
-NAME     IMAGE          STATUS
-jenny    jenny:0.1.0    running
+NAME      IMAGE                  STATUS
+reviewer  github-reviewer:0.1.0  running
 ```
 
 Test a skill works before expecting MCP to use it:
 
 ```bash
-$ aide.sh exec jenny cool courses
+$ aide.sh exec reviewer pr list
 ```
 
 If the skill works via `exec` but not via MCP, check the MCP server logs:

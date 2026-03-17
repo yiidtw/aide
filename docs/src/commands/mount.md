@@ -29,8 +29,8 @@ Writes to `~/.claude/projects/<cwd-key>/memory/aide_<instance>.md`.
 The CWD is encoded as a path key (slashes replaced with dashes). If a `MEMORY.md` index file exists in that directory, an entry is appended under an `## Aide Agents` section.
 
 ```bash
-aide.sh mount jenny.ydwu claude
-# -> ~/.claude/projects/-Users-ydwu-projects-myapp/memory/aide_jenny.ydwu.md
+aide.sh mount reviewer.demo claude
+# -> ~/.claude/projects/-Users-demo-projects-myapp/memory/aide_reviewer.demo.md
 ```
 
 ## Target: codex
@@ -52,10 +52,10 @@ Mounts (or unmounts) to all three targets at once.
 ## Examples
 
 ```bash
-aide.sh mount jenny.ydwu claude
-aide.sh mount jenny.ydwu all
-aide.sh unmount jenny.ydwu codex
-aide.sh unmount jenny.ydwu all
+aide.sh mount reviewer.demo claude
+aide.sh mount reviewer.demo all
+aide.sh unmount reviewer.demo codex
+aide.sh unmount reviewer.demo all
 ```
 
 ## Unmount behavior

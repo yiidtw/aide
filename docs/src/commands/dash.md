@@ -36,27 +36,27 @@ Static assets are embedded in the binary via `rust_embed`.
 {
   "instances": [
     {
-      "name": "jenny.ydwu",
-      "agent_type": "jenny",
+      "name": "reviewer.demo",
+      "agent_type": "reviewer",
       "status": "active",
-      "email": "jenny@aide.sh",
-      "role": "PhD assistant",
+      "email": "reviewer@aide.sh",
+      "role": "GitHub PR reviewer",
       "cron_count": 2,
-      "last_activity": "[08:00:01] cool scan completed"
+      "last_activity": "[08:00:01] diff completed"
     }
   ]
 }
 ```
 
-**GET /api/logs/jenny.ydwu?tail=5**
+**GET /api/logs/reviewer.demo?tail=5**
 ```json
 {
   "logs": [
-    "[08:00:01] cron: cool scan",
-    "[08:00:03] cool scan completed",
-    "[12:00:01] cron: email check",
-    "[12:00:05] email check completed",
-    "[14:32:10] mcp-exec: cool courses"
+    "[08:00:01] cron: diff",
+    "[08:00:03] diff completed",
+    "[12:00:01] cron: notifications",
+    "[12:00:05] notifications completed",
+    "[14:32:10] mcp-exec: pr list"
   ]
 }
 ```

@@ -60,13 +60,13 @@ If the same key exists at multiple levels, the highest-priority value wins.
 
 ```toml
 # Agentfile.toml
-[skills.email]
-script = "skills/email.sh"
-env = ["SMTP_USER", "SMTP_PASS"]   # skill-level: checked first
+[skills.notifications]
+script = "skills/notifications.sh"
+env = ["GITHUB_TOKEN"]             # skill-level: checked first
 
 [env]
-required = ["NTU_COOL_TOKEN"]       # agent-level: checked second
-optional = ["SMTP_USER"]            # vault: checked last
+required = ["GITHUB_TOKEN"]        # agent-level: checked second
+optional = ["SLACK_WEBHOOK"]       # vault: checked last
 ```
 
 ## Credential leak scanning
@@ -74,8 +74,8 @@ optional = ["SMTP_USER"]            # vault: checked last
 aide.sh scans skill output for potential secret leaks:
 
 ```bash
-$ aide.sh exec bot email check
-[warn] Potential secret detected in output (SMTP_PASS pattern). Use --allow-leak to suppress.
+$ aide.sh exec bot notifications
+[warn] Potential secret detected in output (GITHUB_TOKEN pattern). Use --allow-leak to suppress.
 ```
 
 This is a best-effort check. Always review scripts that handle sensitive data.

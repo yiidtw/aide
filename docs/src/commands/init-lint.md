@@ -76,11 +76,11 @@ aide.sh lint [PATH]
 ```
 $ aide.sh lint
 [pass] Agentfile.toml parsed
-[pass] agent.name = "jenny"
+[pass] agent.name = "github-reviewer"
 [pass] agent.version = "0.1.0"
 [pass] agent.description present
 [pass] agent.author present
-[pass] skills/cool.sh exists (executable)
+[pass] skills/pr.sh exists (executable)
 [warn] skills.chrome: missing usage
 [fail] skills/draft.sh: not executable
 1 warning(s), 1 error(s)

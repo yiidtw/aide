@@ -57,7 +57,7 @@ Add `-p` and the input becomes a natural language prompt routed through an LLM:
 
 ```bash
 # explicit: you pick the skill and args
-aide.sh exec bot email check
+aide.sh exec bot notifications
 
 # semantic: LLM picks the skill and args
 aide.sh exec -p bot "do I have new mail?"

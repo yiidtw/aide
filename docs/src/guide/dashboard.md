@@ -2,7 +2,7 @@
 
 aide.sh includes a built-in web dashboard for monitoring agents.
 
-![aide.sh dashboard](../images/dash-jenny.png)
+![aide.sh dashboard](../images/dash-demo.png)
 
 ## Quick start
 
@@ -29,13 +29,13 @@ Dashboard serves at `http://localhost:3939`.
 curl http://localhost:3939/api/instances
 
 # Instance detail (skills, cron, metadata)
-curl http://localhost:3939/api/instance/jenny.ydwu
+curl http://localhost:3939/api/instance/reviewer.demo
 
 # Logs (latest N lines)
-curl http://localhost:3939/api/logs/jenny.ydwu?tail=50
+curl http://localhost:3939/api/logs/reviewer.demo?tail=50
 
 # Usage analytics
-curl http://localhost:3939/api/stats/jenny.ydwu
+curl http://localhost:3939/api/stats/reviewer.demo
 ```
 
 ## Stats response
@@ -44,8 +44,8 @@ curl http://localhost:3939/api/stats/jenny.ydwu
 {
   "total_execs": 12,
   "by_skill": {
-    "cool": { "count": 9, "success": 9, "fail": 0 },
-    "email": { "count": 1, "success": 1, "fail": 0 }
+    "pr": { "count": 9, "success": 9, "fail": 0 },
+    "notifications": { "count": 1, "success": 1, "fail": 0 }
   },
   "by_source": { "cli": 12, "mcp": 0 }
 }

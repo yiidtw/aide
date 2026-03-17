@@ -9,8 +9,8 @@ aide.sh run <IMAGE> [--name NAME] [-d]
 ```
 
 **IMAGE** can be:
-- A local agent type defined in `aide.toml` (e.g. `jenny`)
-- A registry reference in `<user>/<type>` format (e.g. `ydwu/school-assistant`)
+- A local agent type defined in `aide.toml` (e.g. `reviewer`)
+- A registry reference in `<user>/<type>` format (e.g. `aide/github-reviewer`)
 
 ## Options
 
@@ -22,9 +22,9 @@ aide.sh run <IMAGE> [--name NAME] [-d]
 ## Examples
 
 ```bash
-aide.sh run jenny                          # local type from aide.toml
-aide.sh run ydwu/school-assistant          # pull from registry, then run
-aide.sh run ydwu/school-assistant --name school
+aide.sh run reviewer                       # local type from aide.toml
+aide.sh run aide/github-reviewer           # pull from registry, then run
+aide.sh run aide/github-reviewer --name reviewer
 ```
 
 ## What happens

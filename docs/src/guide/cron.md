@@ -7,14 +7,14 @@ Run skills on a schedule using cron expressions.
 Add a `schedule` field to any skill:
 
 ```toml
-[skills.cool]
-script = "skills/cool.sh"
-description = "NTU COOL LMS scanning"
+[skills.pr]
+script = "skills/pr.sh"
+description = "GitHub PR scanning"
 schedule = "0 8 * * *"           # daily at 8:00 AM
 
-[skills.email]
-script = "skills/email.sh"
-description = "Email triage"
+[skills.notifications]
+script = "skills/notifications.sh"
+description = "GitHub notifications triage"
 schedule = "0 */4 * * *"         # every 4 hours
 ```
 
@@ -31,23 +31,23 @@ minute  hour  day-of-month  month  day-of-week
 
 ```bash
 $ aide.sh cron ls
-INSTANCE  SKILL   SCHEDULE       NEXT RUN
-jenny     cool    0 8 * * *      2025-06-15 08:00
-jenny     email   0 */4 * * *    2025-06-15 12:00
+INSTANCE  SKILL          SCHEDULE       NEXT RUN
+reviewer  pr             0 8 * * *      2025-06-15 08:00
+reviewer  notifications  0 */4 * * *    2025-06-15 12:00
 ```
 
 ### Add a schedule
 
 ```bash
-$ aide.sh cron add jenny cool "30 9 * * 1-5"
-Schedule set: jenny/cool at 30 9 * * 1-5 (weekdays at 9:30 AM)
+$ aide.sh cron add reviewer pr "30 9 * * 1-5"
+Schedule set: reviewer/pr at 30 9 * * 1-5 (weekdays at 9:30 AM)
 ```
 
 ### Remove a schedule
 
 ```bash
-$ aide.sh cron rm jenny cool
-Schedule removed: jenny/cool
+$ aide.sh cron rm reviewer pr
+Schedule removed: reviewer/pr
 ```
 
 ## Daemon mode
@@ -84,9 +84,9 @@ The dashboard at `http://localhost:3939` shows a cron panel with:
 Cron job output is captured in the instance log:
 
 ```bash
-$ aide.sh logs jenny --filter cron
-[2025-06-14 08:00:01] cron/cool: 3 courses, 2 new assignments
-[2025-06-14 12:00:01] cron/email: 5 unread messages
+$ aide.sh logs reviewer --filter cron
+[2025-06-14 08:00:01] cron/pr: 3 open PRs, 2 need review
+[2025-06-14 12:00:01] cron/notifications: 5 unread notifications
 ```
 
 Failed jobs (non-zero exit code) are flagged in the dashboard and logs.

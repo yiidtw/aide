@@ -20,10 +20,10 @@ When called without a skill, lists all available skills for the instance (equiva
 ## Examples
 
 ```bash
-aide.sh exec jenny.ydwu                     # list available skills
-aide.sh exec jenny.ydwu cool courses         # run the "cool" skill with arg "courses"
-aide.sh exec jenny.ydwu email check          # check email
-aide.sh exec -it jenny.ydwu cool scan        # interactive mode
+aide.sh exec reviewer.demo                   # list available skills
+aide.sh exec reviewer.demo pr list           # run the "pr" skill with arg "list"
+aide.sh exec reviewer.demo notifications     # check notifications
+aide.sh exec -it reviewer.demo diff          # interactive mode
 ```
 
 ## Skill resolution
@@ -43,7 +43,7 @@ Secrets from the vault (`~/.aide/vault.age`) are injected with a tiered scoping 
 
 ## Smart error messages
 
-If you pass a registry-style image reference (e.g. `ydwu/school-assistant`) instead of an instance name, the command suggests running `aide.sh pull` and `aide.sh run` first.
+If you pass a registry-style image reference (e.g. `aide/github-reviewer`) instead of an instance name, the command suggests running `aide.sh pull` and `aide.sh run` first.
 
 ## Help output
 

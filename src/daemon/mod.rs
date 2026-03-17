@@ -5,6 +5,7 @@ use tokio::signal;
 use tokio::time::Duration;
 use tracing::{error, info, warn};
 
+use crate::agents::agentfile::AgentfileSpec;
 use crate::agents::instance::InstanceManager;
 use crate::config::AideConfig;
 use crate::dashboard;
@@ -61,6 +62,9 @@ impl Daemon {
         // Start cron ticker
         self.start_cron_ticker();
 
+        // Start Telegram bots for instances that declare [expose.telegram]
+        self.start_telegram_bots();
+
         info!("aide daemon ready, waiting for signals");
 
         // Wait for shutdown signal
@@ -110,6 +114,50 @@ impl Daemon {
         let client_secret = std::env::var("AIDE_GOOGLE_CLIENT_SECRET").ok()?;
         let refresh_token = std::env::var("AIDE_GMAIL_REFRESH_TOKEN").ok()?;
         Some((client_id, client_secret, refresh_token))
+    }
+
+    fn start_telegram_bots(&self) {
+        let data_dir = self.config.aide.data_dir.clone();
+        let mgr = InstanceManager::new(&data_dir);
+        let instances = match mgr.list() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let vault_env = load_vault_env().unwrap_or_default();
+
+        for inst in &instances {
+            let inst_dir = mgr.base_dir().join(&inst.name);
+            let spec = match AgentfileSpec::load(&inst_dir) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            if let Some(expose) = &spec.expose {
+                if let Some(tg) = &expose.telegram {
+                    // Find token from vault env
+                    let token = vault_env
+                        .iter()
+                        .find(|(k, _)| k == &tg.token_env)
+                        .map(|(_, v)| v.clone());
+
+                    if let Some(token) = token {
+                        info!(instance = %inst.name, "starting telegram bot");
+                        crate::expose::telegram::spawn_telegram_bot(
+                            data_dir.clone(),
+                            inst.name.clone(),
+                            token,
+                        );
+                    } else {
+                        warn!(
+                            instance = %inst.name,
+                            env = %tg.token_env,
+                            "telegram token not found in vault"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn start_cron_ticker(&self) {

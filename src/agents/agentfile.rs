@@ -85,6 +85,32 @@ pub struct AgentfileSpec {
     /// Ignored when the agent runs under an MCP caller (Claude Code, etc.).
     #[serde(default)]
     pub soul: Option<SoulSection>,
+    /// The `[expose]` table. Optional. Declares external messaging channels.
+    #[serde(default)]
+    pub expose: Option<ExposeSection>,
+}
+
+/// External messaging channel configuration.
+///
+/// Allows the agent to be reached via external platforms.
+/// Each channel is self-service — the user provides their own credentials.
+///
+/// ```toml
+/// [expose]
+/// telegram = { token_env = "TELEGRAM_BOT_TOKEN" }
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ExposeSection {
+    /// Telegram bot config. The agent responds to messages via Telegram Bot API.
+    #[serde(default)]
+    pub telegram: Option<TelegramExpose>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramExpose {
+    /// Environment variable name containing the Telegram bot token.
+    /// Token is loaded from the vault at runtime.
+    pub token_env: String,
 }
 
 /// LLM runtime hints for daemon mode.

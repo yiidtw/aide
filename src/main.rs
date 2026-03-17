@@ -6,6 +6,7 @@ mod daemon;
 mod dashboard;
 mod dispatch;
 mod email;
+mod expose;
 mod mcp;
 mod sync;
 mod top;
@@ -1096,6 +1097,7 @@ fn return_empty_spec() -> AgentfileSpec {
         seed: None,
         env: None,
         soul: None,
+        expose: None,
     }
 }
 

@@ -457,6 +457,7 @@ fn empty_spec() -> AgentfileSpec {
         seed: None,
         env: None,
         soul: None,
+        expose: None,
     }
 }
 

@@ -2,8 +2,4 @@ name = "aide-email-gateway"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 
-[vars]
-RESEND_API_KEY = ""  # set via wrangler secret
-
-[[email]]
-# This tells Cloudflare to route emails to this worker
+# RESEND_API_KEY set via: wrangler secret put RESEND_API_KEY

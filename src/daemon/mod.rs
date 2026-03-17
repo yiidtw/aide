@@ -4,15 +4,28 @@ use tokio::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::config::AideConfig;
+use crate::dashboard;
 use crate::email::GmailPoller;
+
+const DASHBOARD_PORT: u16 = 3939;
 
 pub struct Daemon {
     config: AideConfig,
+    dash_enabled: bool,
 }
+
 
 impl Daemon {
     pub fn new(config: AideConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            dash_enabled: true,
+        }
+    }
+
+    pub fn with_dash(mut self, enabled: bool) -> Self {
+        self.dash_enabled = enabled;
+        self
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -35,6 +48,12 @@ impl Daemon {
 
         // Start Gmail poller if credentials available
         self.start_gmail_poller();
+
+        // Start dashboard
+        if self.dash_enabled {
+            dashboard::spawn_dashboard(self.config.aide.data_dir.clone(), DASHBOARD_PORT);
+            info!(port = DASHBOARD_PORT, "dashboard at http://localhost:{}", DASHBOARD_PORT);
+        }
 
         info!("aide daemon ready, waiting for signals");
 

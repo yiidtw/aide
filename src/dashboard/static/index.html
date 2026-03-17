@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aide.sh dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --sidebar-bg: #161b22; --card-bg: #21262d;
+    --border: #30363d; --text: #e6edf3; --text2: #8b949e;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149; --blue: #58a6ff;
+    --font: 'JetBrains Mono','Fira Code','SF Mono',Menlo,monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+  body { display: flex; flex-direction: column; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--sidebar-bg);
+    flex-shrink: 0;
+  }
+  header .brand { font-weight: 700; font-size: 16px; }
+  header .meta { color: var(--text2); font-size: 12px; }
+  header .meta span { margin-left: 12px; }
+
+  /* Main layout */
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 220px; min-width: 220px; background: var(--sidebar-bg);
+    border-right: 1px solid var(--border); overflow-y: auto; padding: 12px 0;
+  }
+  .sidebar-title { padding: 0 16px 8px; font-size: 11px; text-transform: uppercase; color: var(--text2); letter-spacing: .5px; }
+  .instance-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; cursor: pointer; transition: background .15s;
+  }
+  .instance-item:hover { background: var(--card-bg); }
+  .instance-item.selected { background: var(--card-bg); border-left: 2px solid var(--blue); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.active { background: var(--green); }
+  .dot.stopped { background: var(--text2); }
+  .instance-info { min-width: 0; }
+  .instance-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .instance-status { font-size: 11px; color: var(--text2); }
+
+  /* Detail panel */
+  .detail { flex: 1; overflow-y: auto; padding: 24px; }
+  .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text2); }
+
+  .detail-header { margin-bottom: 20px; }
+  .detail-header h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .detail-header .version { color: var(--blue); font-size: 12px; }
+  .detail-header .desc { color: var(--text2); margin-top: 6px; font-size: 13px; }
+
+  /* Sections */
+  .section { margin-bottom: 24px; }
+  .section-title {
+    font-size: 11px; text-transform: uppercase; color: var(--text2);
+    letter-spacing: .5px; padding-bottom: 8px; margin-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Skills table */
+  .skills-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .skills-table th { text-align: left; color: var(--text2); font-weight: 400; padding: 4px 12px 4px 0; font-size: 11px; }
+  .skills-table td { padding: 6px 12px 6px 0; border-top: 1px solid var(--border); }
+  .skills-table .skill-name { color: var(--blue); font-weight: 600; }
+  .skills-table .schedule { color: var(--yellow); font-size: 12px; }
+  .env-tag {
+    display: inline-block; background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 3px; padding: 1px 5px; font-size: 11px; color: var(--text2); margin-right: 4px;
+  }
+
+  /* Cron list */
+  .cron-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px;
+  }
+  .cron-item:first-child { border-top: none; }
+  .cron-schedule { color: var(--yellow); min-width: 100px; }
+  .cron-skill { color: var(--blue); }
+  .cron-last { color: var(--text2); margin-left: auto; font-size: 12px; }
+
+  /* Logs */
+  .logs-container {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; max-height: 320px; overflow-y: auto; font-size: 12px;
+    line-height: 1.7;
+  }
+  .log-line { white-space: pre-wrap; word-break: break-all; color: var(--text2); }
+  .log-line .ts { color: var(--text2); }
+  .log-line .ok { color: var(--green); }
+  .log-line .err { color: var(--red); }
+
+  /* Responsive */
+  @media (max-width: 700px) {
+    .sidebar { width: 60px; min-width: 60px; }
+    .instance-info { display: none; }
+    .detail { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">aide.sh</div>
+  <div class="meta">
+    <span id="instance-count"></span>
+    <span>localhost:3939</span>
+  </div>
+</header>
+
+<div class="main">
+  <aside class="sidebar">
+    <div class="sidebar-title">Instances</div>
+    <div id="instance-list"></div>
+  </aside>
+  <main class="detail" id="detail">
+    <div class="empty-state">Select an instance</div>
+  </main>
+</div>
+
+<script>
+(function () {
+  const $ = (s, p) => (p || document).querySelector(s);
+  const listEl = $('#instance-list');
+  const detailEl = $('#detail');
+  const countEl = $('#instance-count');
+
+  let selected = null;
+  let logInterval = null;
+
+  // ── Fetch helpers ──────────────────────────────────────────
+  async function api(path) {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(res.statusText);
+    return res.json();
+  }
+
+  // ── Render sidebar ─────────────────────────────────────────
+  async function loadInstances() {
+    try {
+      const data = await api('/api/instances');
+      const instances = data.instances || [];
+      countEl.textContent = instances.length + ' instance' + (instances.length !== 1 ? 's' : '');
+      listEl.innerHTML = '';
+      instances.forEach(inst => {
+        const el = document.createElement('div');
+        el.className = 'instance-item' + (selected === inst.name ? ' selected' : '');
+        el.innerHTML =
+          '<div class="dot ' + (inst.status === 'active' ? 'active' : 'stopped') + '"></div>' +
+          '<div class="instance-info">' +
+            '<div class="instance-name">' + esc(inst.name) + '</div>' +
+            '<div class="instance-status">' + esc(inst.status) + '</div>' +
+          '</div>';
+        el.addEventListener('click', () => selectInstance(inst.name));
+        listEl.appendChild(el);
+      });
+    } catch (e) {
+      listEl.innerHTML = '<div style="padding:16px;color:var(--red);font-size:12px">Failed to load instances</div>';
+    }
+  }
+
+  // ── Select instance ────────────────────────────────────────
+  async function selectInstance(name) {
+    selected = name;
+    // highlight sidebar
+    listEl.querySelectorAll('.instance-item').forEach((el, i) => {
+      const itemName = el.querySelector('.instance-name'); el.classList.toggle('selected', itemName && itemName.textContent === name);
+    });
+
+    try {
+      const data = await api('/api/instance/' + encodeURIComponent(name));
+      const inst = data.instance || data;
+      const skills = inst.skills || data.skills || [];
+      const cron = inst.cron || data.cron || [];
+
+      let html = '<div class="detail-header">' +
+        '<h2>' + esc(inst.name) + '</h2>' +
+        '<span class="version">' + esc(inst.agent_type + ':' + (inst.version || '')) + '</span>' +
+        '<div class="desc">' + esc(inst.description || '') + '</div>' +
+      '</div>';
+
+      // Skills
+      if (skills.length) {
+        html += '<div class="section"><div class="section-title">Skills</div>' +
+          '<table class="skills-table"><thead><tr>' +
+          '<th>Name</th><th>Description</th><th>Schedule</th><th>Env</th>' +
+          '</tr></thead><tbody>';
+        skills.forEach(s => {
+          const envHtml = (s.env || []).map(e => '<span class="env-tag">' + esc(e) + '</span>').join('');
+          html += '<tr>' +
+            '<td class="skill-name">' + esc(s.name) + '</td>' +
+            '<td>' + esc(s.description || '') + '</td>' +
+            '<td class="schedule">' + esc(s.schedule || '-') + '</td>' +
+            '<td>' + (envHtml || '-') + '</td>' +
+          '</tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+
+      // Cron
+      if (cron.length) {
+        html += '<div class="section"><div class="section-title">Cron Jobs</div>';
+        cron.forEach(c => {
+          html += '<div class="cron-item">' +
+            '<span class="cron-schedule">' + esc(c.schedule) + '</span>' +
+            '<span class="cron-skill">' + esc(c.skill) + '</span>' +
+            '<span class="cron-last">last: ' + esc(c.last_run || 'never') + '</span>' +
+          '</div>';
+        });
+        html += '</div>';
+      }
+
+      // Logs placeholder
+      html += '<div class="section"><div class="section-title">Logs</div>' +
+        '<div class="logs-container" id="logs-panel"></div></div>';
+
+      detailEl.innerHTML = html;
+      startLogPolling(name);
+    } catch (e) {
+      detailEl.innerHTML = '<div class="empty-state" style="color:var(--red)">Failed to load instance</div>';
+    }
+  }
+
+  // ── Logs polling ───────────────────────────────────────────
+  function startLogPolling(name) {
+    if (logInterval) clearInterval(logInterval);
+    fetchLogs(name);
+    logInterval = setInterval(() => fetchLogs(name), 3000);
+  }
+
+  async function fetchLogs(name) {
+    if (selected !== name) return;
+    try {
+      const data = await api('/api/logs/' + encodeURIComponent(name) + '?tail=50');
+      const panel = $('#logs-panel');
+      if (!panel) return;
+      const logs = data.logs || [];
+      panel.innerHTML = logs.map(line => {
+        const colored = esc(line)
+          .replace(/(ok|success)/gi, '<span class="ok">$1</span>')
+          .replace(/(error|fail|fatal)/gi, '<span class="err">$1</span>');
+        return '<div class="log-line">' + colored + '</div>';
+      }).join('');
+      panel.scrollTop = panel.scrollHeight;
+    } catch (_) { /* silent */ }
+  }
+
+  // ── Util ───────────────────────────────────────────────────
+  function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // ── Init ───────────────────────────────────────────────────
+  loadInstances();
+})();
+</script>
+</body>
+</html>

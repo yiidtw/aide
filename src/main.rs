@@ -3,6 +3,7 @@
 mod agents;
 mod config;
 mod daemon;
+mod dashboard;
 mod dispatch;
 mod email;
 mod mcp;
@@ -133,7 +134,11 @@ enum Command {
     /// Display system-wide information
     Info,
     /// Start the aide daemon
-    Up,
+    Up {
+        /// Disable dashboard web UI
+        #[arg(long)]
+        no_dash: bool,
+    },
     /// Stop the aide daemon
     Down,
 
@@ -182,6 +187,12 @@ enum Command {
     },
     /// Start MCP stdio server for LLM tool integration
     Mcp,
+    /// Open the agent observability dashboard
+    Dash {
+        /// Port to serve on
+        #[arg(short, long, default_value = "3939")]
+        port: u16,
+    },
 
     // ─── Hidden aliases for backward compat ───
 
@@ -289,6 +300,10 @@ async fn main() -> Result<()> {
             let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
             return mcp::run_mcp_server(&config.aide.data_dir);
         }
+        Command::Dash { port } => {
+            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+            return cmd_dash(&config.aide.data_dir, *port).await;
+        }
         _ => {}
     }
 
@@ -337,8 +352,8 @@ async fn main() -> Result<()> {
         Command::Info | Command::Status | Command::Check => {
             cmd_info(&config, &mgr)?;
         }
-        Command::Up => {
-            let d = daemon::Daemon::new(config);
+        Command::Up { no_dash } => {
+            let d = daemon::Daemon::new(config).with_dash(!no_dash);
             d.run().await?;
         }
         Command::Down => {
@@ -418,7 +433,8 @@ async fn main() -> Result<()> {
         | Command::Search { .. }
         | Command::Init { .. }
         | Command::Lint { .. }
-        | Command::Mcp => unreachable!(),
+        | Command::Mcp
+        | Command::Dash { .. } => unreachable!(),
     }
 
     Ok(())
@@ -1253,6 +1269,13 @@ fn scan_for_leaks(dir: &Path) -> Result<Vec<String>> {
 
     walk(dir, &secret_prefixes, &mut leaks)?;
     Ok(leaks)
+}
+
+// ─── Dashboard ───
+
+async fn cmd_dash(data_dir: &str, port: u16) -> Result<()> {
+    println!("aide.sh dashboard → http://localhost:{}", port);
+    dashboard::serve(data_dir, port).await
 }
 
 // ─── Init / Lint ───

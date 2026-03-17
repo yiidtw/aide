@@ -27,7 +27,7 @@ echo "Downloading aide-sh v${VERSION} for ${TARGET}..."
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "${INSTALL_DIR}"
 
-if ! curl -fsSL "$URL" -o "${INSTALL_DIR}/aide-sh"; then
+if ! curl -sL --fail-with-body "$URL" -o "${INSTALL_DIR}/aide-sh"; then
   echo ""
   echo "Download failed. Install from source instead:"
   echo "  cargo install aide-sh"

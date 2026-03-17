@@ -19,26 +19,22 @@ case "$OS" in
 esac
 
 VERSION="0.1.0"
-URL="https://github.com/yiidtw/aide/releases/download/v${VERSION}/aide-sh-${TARGET}.tar.gz"
+BINARY="aide-sh-${TARGET}"
+URL="https://github.com/yiidtw/aide/releases/download/v${VERSION}/${BINARY}"
 
 echo "Downloading aide-sh v${VERSION} for ${TARGET}..."
 
-TMPDIR=$(mktemp -d)
-if ! curl -fsSL "$URL" -o "${TMPDIR}/aide-sh.tar.gz"; then
+INSTALL_DIR="${HOME}/.local/bin"
+mkdir -p "${INSTALL_DIR}"
+
+if ! curl -fsSL "$URL" -o "${INSTALL_DIR}/aide-sh"; then
   echo ""
-  echo "Binary not found. Install from source instead:"
+  echo "Download failed. Install from source instead:"
   echo "  cargo install aide-sh"
-  rm -rf "${TMPDIR}"
   exit 1
 fi
 
-tar xzf "${TMPDIR}/aide-sh.tar.gz" -C "${TMPDIR}"
-
-INSTALL_DIR="${HOME}/.local/bin"
-mkdir -p "${INSTALL_DIR}"
-mv "${TMPDIR}/aide-sh" "${INSTALL_DIR}/aide-sh"
 chmod +x "${INSTALL_DIR}/aide-sh"
-rm -rf "${TMPDIR}"
 
 echo ""
 echo "Installed aide-sh to ${INSTALL_DIR}/aide-sh"
@@ -52,6 +48,6 @@ fi
 
 echo "Get started:"
 echo "  aide-sh --version"
-echo "  aide-sh pull aide/devops"
-echo "  aide-sh run aide/devops --name bot"
-echo "  aide-sh exec bot check-uptime"
+echo "  aide-sh pull aide/github-reviewer"
+echo "  aide-sh run aide/github-reviewer --name reviewer"
+echo "  aide-sh exec reviewer pr list"

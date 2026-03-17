@@ -1,5 +1,6 @@
 export interface Env {
   RESEND_API_KEY: string;
+  ADMIN_EMAIL: string;
   INBOX: KVNamespace;
 }
 
@@ -15,7 +16,7 @@ export default {
 
     if (parts.length < 2) {
       // Not an agent address, forward to admin
-      await message.forward("yiidtw@gmail.com");
+      await message.forward(env.ADMIN_EMAIL);
       return;
     }
 
@@ -49,7 +50,7 @@ export default {
     await sendReply(env.RESEND_API_KEY, from, agentName, username, subject, body);
 
     // Also forward original to admin for monitoring
-    await message.forward("yiidtw@gmail.com");
+    await message.forward(env.ADMIN_EMAIL);
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {

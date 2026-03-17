@@ -7,6 +7,7 @@ use axum::Router;
 use rust_embed::Embed;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::agents::agentfile::AgentfileSpec;
@@ -31,6 +32,7 @@ pub async fn serve(data_dir: &str, port: u16) -> Result<()> {
         .route("/api/instances", get(api_instances))
         .route("/api/instance/{name}", get(api_instance_detail))
         .route("/api/logs/{name}", get(api_logs))
+        .route("/api/stats/{name}", get(api_stats))
         .fallback(get(static_handler))
         .with_state(state);
 
@@ -233,4 +235,112 @@ async fn api_logs(
         )
             .into_response(),
     }
+}
+
+async fn api_stats(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Verify instance exists
+    match state.mgr.get(&name) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("instance '{}' not found", name) })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    }
+
+    let logs = match state.mgr.read_logs(&name, 10000) {
+        Ok(l) => l,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    let mut total_execs: u64 = 0;
+    let mut cli_count: u64 = 0;
+    let mut mcp_count: u64 = 0;
+
+    // skill_name -> (count, success, fail)
+    let mut by_skill: HashMap<String, (u64, u64, u64)> = HashMap::new();
+
+    for line in &logs {
+        // Check for exec-result or mcp-exec-result
+        let (is_mcp, rest) = if let Some(pos) = line.find("mcp-exec-result: ") {
+            (true, &line[pos + "mcp-exec-result: ".len()..])
+        } else if let Some(pos) = line.find("exec-result: ") {
+            (false, &line[pos + "exec-result: ".len()..])
+        } else {
+            continue;
+        };
+
+        // Parse: <skill> → ok/FAILED
+        let arrow_pos = match rest.find(" → ") {
+            Some(p) => p,
+            None => {
+                // Try ASCII arrow as fallback
+                match rest.find(" -> ") {
+                    Some(p) => p,
+                    None => continue,
+                }
+            }
+        };
+
+        let skill_full = &rest[..arrow_pos];
+        // Take the first word as the skill name
+        let skill_name = skill_full.split_whitespace().next().unwrap_or(skill_full);
+        let after_arrow = if rest[arrow_pos..].starts_with(" → ") {
+            &rest[arrow_pos + " → ".len()..]
+        } else {
+            &rest[arrow_pos + " -> ".len()..]
+        };
+
+        let is_success = after_arrow.starts_with("ok");
+
+        total_execs += 1;
+        if is_mcp {
+            mcp_count += 1;
+        } else {
+            cli_count += 1;
+        }
+
+        let entry = by_skill.entry(skill_name.to_string()).or_insert((0, 0, 0));
+        entry.0 += 1;
+        if is_success {
+            entry.1 += 1;
+        } else {
+            entry.2 += 1;
+        }
+    }
+
+    let skill_map: serde_json::Map<String, serde_json::Value> = by_skill
+        .into_iter()
+        .map(|(name, (count, success, fail))| {
+            (
+                name,
+                json!({ "count": count, "success": success, "fail": fail }),
+            )
+        })
+        .collect();
+
+    Json(json!({
+        "total_execs": total_execs,
+        "by_skill": skill_map,
+        "by_source": { "cli": cli_count, "mcp": mcp_count },
+    }))
+    .into_response()
 }

@@ -85,6 +85,16 @@
   .cron-skill { color: var(--blue); }
   .cron-last { color: var(--text2); margin-left: auto; font-size: 12px; }
 
+  /* Usage stats */
+  .usage-summary { color: var(--text2); font-size: 13px; margin-bottom: 12px; }
+  .usage-summary .num { color: var(--text); font-weight: 600; }
+  .usage-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; }
+  .usage-bar-label { min-width: 100px; color: var(--blue); font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .usage-bar-track { flex: 1; height: 20px; background: var(--card-bg); border-radius: 3px; overflow: hidden; display: flex; }
+  .usage-bar-ok { background: var(--green); height: 100%; }
+  .usage-bar-fail { background: var(--red); height: 100%; }
+  .usage-bar-stat { min-width: 100px; font-size: 12px; color: var(--text2); }
+
   /* Logs */
   .logs-container {
     background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
@@ -216,11 +226,17 @@
         html += '</div>';
       }
 
+      // Usage stats placeholder
+      html += '<div class="section" id="usage-section" style="display:none">' +
+        '<div class="section-title">Usage</div>' +
+        '<div id="usage-content"></div></div>';
+
       // Logs placeholder
       html += '<div class="section"><div class="section-title">Logs</div>' +
         '<div class="logs-container" id="logs-panel"></div></div>';
 
       detailEl.innerHTML = html;
+      fetchStats(name);
       startLogPolling(name);
     } catch (e) {
       detailEl.innerHTML = '<div class="empty-state" style="color:var(--red)">Failed to load instance</div>';
@@ -248,6 +264,51 @@
         return '<div class="log-line">' + colored + '</div>';
       }).join('');
       panel.scrollTop = panel.scrollHeight;
+    } catch (_) { /* silent */ }
+  }
+
+  // ── Usage stats ─────────────────────────────────────────────
+  async function fetchStats(name) {
+    try {
+      const data = await api('/api/stats/' + encodeURIComponent(name));
+      var section = $('#usage-section');
+      var content = $('#usage-content');
+      if (!section || !content) return;
+      if (data.total_execs === 0) { section.style.display = 'none'; return; }
+
+      section.style.display = '';
+      var total = data.total_execs;
+      var cli = data.by_source.cli || 0;
+      var mcp = data.by_source.mcp || 0;
+      var skills = data.by_skill || {};
+
+      // Sort skills by count descending
+      var sorted = Object.keys(skills).sort(function(a, b) { return skills[b].count - skills[a].count; });
+      var maxCount = sorted.length ? skills[sorted[0]].count : 1;
+
+      var h = '<div class="usage-summary"><span class="num">' + total + '</span> total executions — ' +
+        '<span class="num">' + cli + '</span> cli, <span class="num">' + mcp + '</span> mcp</div>';
+
+      sorted.forEach(function(sk) {
+        var s = skills[sk];
+        var pct = Math.round((s.count / maxCount) * 100);
+        var okPct = s.count > 0 ? Math.round((s.success / s.count) * 100) : 0;
+        var failPct = 100 - okPct;
+        var okW = Math.round(pct * okPct / 100);
+        var failW = pct - okW;
+        var rate = s.count > 0 ? Math.round((s.success / s.count) * 100) : 0;
+
+        h += '<div class="usage-bar-row">' +
+          '<div class="usage-bar-label">' + esc(sk) + '</div>' +
+          '<div class="usage-bar-track">' +
+            '<div class="usage-bar-ok" style="width:' + okW + '%"></div>' +
+            '<div class="usage-bar-fail" style="width:' + failW + '%"></div>' +
+          '</div>' +
+          '<div class="usage-bar-stat">' + s.success + '/' + s.count + ' (' + rate + '%)</div>' +
+        '</div>';
+      });
+
+      content.innerHTML = h;
     } catch (_) { /* silent */ }
   }
 

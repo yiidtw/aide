@@ -3,19 +3,14 @@ name: Deploy Docs
 on:
   push:
     branches: [main]
-    paths: [docs/**, src/**]  # only rebuild when docs or code changes
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+    paths: [docs/**, src/**]
 
 concurrency:
-  group: pages
+  group: docs
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,25 +18,13 @@ jobs:
       - name: Install mdbook
         run: |
           curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          chmod +x mdbook
 
-      - name: Build docs
-        run: |
-          ./mdbook build docs
-          echo "aide.sh" > docs/book/CNAME
+      - name: Build
+        run: ./mdbook build docs
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
         with:
-          path: docs/book
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy docs/book --project-name aide-docs

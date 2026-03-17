@@ -8,6 +8,7 @@ mod dispatch;
 mod email;
 mod mcp;
 mod sync;
+mod top;
 mod vault;
 
 use anyhow::{bail, Context, Result};
@@ -193,6 +194,8 @@ enum Command {
         #[arg(short, long, default_value = "3939")]
         port: u16,
     },
+    /// Live terminal dashboard (htop for agents)
+    Top,
     /// Set up MCP integration for Claude Code / Codex
     SetupMcp {
         /// Target: claude (default)
@@ -308,6 +311,10 @@ async fn main() -> Result<()> {
         Command::Dash { port } => {
             let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
             return cmd_dash(&config.aide.data_dir, *port).await;
+        }
+        Command::Top => {
+            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+            return top::run_top(&config.aide.data_dir);
         }
         Command::SetupMcp { target } => return cmd_setup_mcp(target),
         _ => {}
@@ -441,6 +448,7 @@ async fn main() -> Result<()> {
         | Command::Lint { .. }
         | Command::Mcp
         | Command::Dash { .. }
+        | Command::Top
         | Command::SetupMcp { .. } => unreachable!(),
     }
 
@@ -1666,16 +1674,29 @@ async fn cmd_login() -> Result<()> {
                 .send().await?.json::<serde_json::Value>().await?;
 
             let username = user_resp["login"].as_str().unwrap_or("unknown").to_string();
+            let email = user_resp["email"].as_str().unwrap_or("").to_string();
 
             let auth = serde_json::json!({
                 "token": access_token,
                 "username": username,
+                "email": email,
                 "provider": "github",
             });
 
             let auth_path = aide_home().join("auth.json");
             std::fs::create_dir_all(aide_home())?;
             std::fs::write(&auth_path, serde_json::to_string_pretty(&auth)?)?;
+
+            // Analytics: register login (fire and forget)
+            let analytics_payload = serde_json::json!({
+                "event": "login",
+                "username": username,
+            });
+            let _ = client
+                .post("https://aide-analytics.aide.sh/v1/events")
+                .json(&analytics_payload)
+                .send()
+                .await;
 
             println!("Login Succeeded ({})", username);
             return Ok(());

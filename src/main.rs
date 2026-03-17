@@ -6,7 +6,6 @@ mod daemon;
 mod dashboard;
 mod dispatch;
 mod email;
-mod expose;
 mod mcp;
 mod sync;
 mod vault;
@@ -200,17 +199,6 @@ enum Command {
         #[arg(default_value = "claude")]
         target: String,
     },
-    /// Expose an agent via Telegram bot or email
-    Expose {
-        /// Instance name
-        instance: String,
-        /// Channel: telegram
-        channel: String,
-        /// Bot token (or read from vault TELEGRAM_BOT_TOKEN)
-        #[arg(long)]
-        token: Option<String>,
-    },
-
     // ─── Hidden aliases for backward compat ───
 
     /// Alias for 'run'
@@ -322,10 +310,6 @@ async fn main() -> Result<()> {
             return cmd_dash(&config.aide.data_dir, *port).await;
         }
         Command::SetupMcp { target } => return cmd_setup_mcp(target),
-        Command::Expose { instance, channel, token } => {
-            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
-            return cmd_expose(&config.aide.data_dir, instance, channel, token.as_deref()).await;
-        }
         _ => {}
     }
 
@@ -457,8 +441,7 @@ async fn main() -> Result<()> {
         | Command::Lint { .. }
         | Command::Mcp
         | Command::Dash { .. }
-        | Command::SetupMcp { .. }
-        | Command::Expose { .. } => unreachable!(),
+        | Command::SetupMcp { .. } => unreachable!(),
     }
 
     Ok(())
@@ -1370,30 +1353,6 @@ fn scan_for_leaks(dir: &Path) -> Result<Vec<String>> {
 
     walk(dir, &secret_prefixes, &mut leaks)?;
     Ok(leaks)
-}
-
-// ─── Expose ───
-
-async fn cmd_expose(data_dir: &str, instance: &str, channel: &str, token: Option<&str>) -> Result<()> {
-    match channel {
-        "telegram" => {
-            let token = match token {
-                Some(t) => t.to_string(),
-                None => {
-                    // Try vault
-                    let vars = load_vault_env()?;
-                    vars.iter()
-                        .find(|(k, _)| k == "TELEGRAM_BOT_TOKEN")
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "No Telegram token. Use --token or store TELEGRAM_BOT_TOKEN in vault."
-                        ))?
-                }
-            };
-            expose::telegram::run_telegram_bot(data_dir, instance, &token).await
-        }
-        _ => bail!("unknown channel '{}'. Supported: telegram", channel),
-    }
 }
 
 // ─── Dashboard ───

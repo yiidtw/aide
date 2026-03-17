@@ -1,0 +1,22 @@
+[agent]
+name = "agents/weather"
+version = "0.1.0"
+description = "TODO: describe your agent"
+author = "TODO: your username"
+
+[persona]
+file = "persona.md"
+
+[skills.hello]
+script = "skills/hello.sh"
+description = "A greeting skill"
+usage = "hello [name]"
+# schedule = "0 9 * * *"    # uncomment for cron
+# env = ["MY_API_KEY"]      # uncomment for secrets
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = []

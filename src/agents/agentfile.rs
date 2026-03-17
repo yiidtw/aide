@@ -88,7 +88,39 @@ pub struct AgentfileSpec {
     /// The `[expose]` table. Optional. Declares external messaging channels.
     #[serde(default)]
     pub expose: Option<ExposeSection>,
+    /// The `[limits]` table. Optional. Resource limits for skill execution.
+    #[serde(default)]
+    pub limits: Option<LimitsSection>,
 }
+
+/// Resource limits for skill execution.
+///
+/// Controls timeouts, LLM token budgets, and retry behavior.
+/// Applied by the daemon and `aide.sh exec`.
+///
+/// ```toml
+/// [limits]
+/// max_timeout = 300
+/// max_tokens = 4096
+/// max_retry = 3
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct LimitsSection {
+    /// Maximum execution time in seconds per skill invocation.
+    /// The skill process is killed after this duration. Default: 300.
+    #[serde(default = "default_max_timeout")]
+    pub max_timeout: u64,
+    /// Maximum LLM tokens per `-p` (standalone mode) invocation.
+    /// Default: 4096.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u64,
+    /// Maximum retry attempts on skill failure. Default: 0 (no retry).
+    #[serde(default)]
+    pub max_retry: u32,
+}
+
+fn default_max_timeout() -> u64 { 300 }
+fn default_max_tokens() -> u64 { 4096 }
 
 /// External messaging channel configuration.
 ///

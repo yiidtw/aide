@@ -1098,6 +1098,7 @@ fn return_empty_spec() -> AgentfileSpec {
         env: None,
         soul: None,
         expose: None,
+        limits: None,
     }
 }
 

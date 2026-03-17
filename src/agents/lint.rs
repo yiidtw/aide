@@ -214,6 +214,22 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
         }
     }
 
+    // 17. Limits sanity checks
+    if let Some(limits) = &spec.limits {
+        if limits.max_timeout > 3600 {
+            warnings.push(format!(
+                "limits.max_timeout = {} is very high (> 3600s)",
+                limits.max_timeout
+            ));
+        }
+        if limits.max_retry > 10 {
+            warnings.push(format!(
+                "limits.max_retry = {} is very high (> 10)",
+                limits.max_retry
+            ));
+        }
+    }
+
     // 11. Credential leak scan
     scan_for_credentials(dir, dir, &mut errors)?;
 

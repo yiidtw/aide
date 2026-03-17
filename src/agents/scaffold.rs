@@ -58,6 +58,11 @@ dir = "seed/"
 [env]
 required = []
 optional = []
+
+[limits]
+max_timeout = 300
+max_tokens = 4096
+max_retry = 3
 "#
     );
     fs::write(dir.join("Agentfile.toml"), agentfile)?;

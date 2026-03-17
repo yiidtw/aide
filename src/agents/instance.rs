@@ -320,6 +320,31 @@ impl InstanceManager {
         Ok(removed)
     }
 
+    /// Update the `last_run` timestamp of a cron entry to `Utc::now()`.
+    ///
+    /// Finds the cron entry matching `skill` and sets its `last_run` field.
+    /// The updated manifest is written back to disk.
+    ///
+    /// # Errors
+    ///
+    /// - Instance not found.
+    /// - No cron entry matches the given skill name.
+    pub fn cron_update_last_run(&self, name: &str, skill: &str) -> Result<()> {
+        let mut manifest = self
+            .load_manifest(name)
+            .context(format!("instance '{}' not found", name))?;
+
+        let entry = manifest
+            .cron
+            .iter_mut()
+            .find(|c| c.skill == skill)
+            .context(format!("no cron entry for skill '{}'", skill))?;
+
+        entry.last_run = Some(Utc::now());
+        self.save_manifest(name, &manifest)?;
+        Ok(())
+    }
+
     /// List all cron entries for an instance.
     ///
     /// Returns the cron entries from the instance manifest.

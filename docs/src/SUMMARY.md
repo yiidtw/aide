@@ -28,6 +28,10 @@
 - [aide.sh dash](./commands/dash.md)
 - [aide.sh mount / unmount](./commands/mount.md)
 
+# Hub
+
+- [Agent Hub](./hub.md)
+
 # Architecture
 
 - [Agent Soul — LLM as Runtime](./arch/soul.md)

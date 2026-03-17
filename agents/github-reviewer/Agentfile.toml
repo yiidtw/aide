@@ -1,0 +1,40 @@
+[agent]
+name = "github-reviewer"
+version = "0.1.0"
+description = "GitHub code review — diff, PR review, CI status, notifications"
+author = "aide"
+
+[persona]
+file = "persona.md"
+
+[skills.diff]
+script = "skills/diff.sh"
+description = "Show current branch diff against main"
+usage = "diff [base]"
+
+[skills.pr]
+script = "skills/pr.sh"
+description = "List or review pull requests"
+usage = "pr [list|view NUMBER|diff NUMBER]"
+
+[skills.ci]
+script = "skills/ci.sh"
+description = "Check CI/Actions status"
+usage = "ci [branch]"
+
+[skills.notifications]
+script = "skills/notifications.sh"
+description = "Show unread GitHub notifications"
+usage = "notifications"
+
+[skills.log]
+script = "skills/log.sh"
+description = "Recent commit history"
+usage = "log [count]"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = ["GITHUB_TOKEN"]

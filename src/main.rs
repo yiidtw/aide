@@ -1561,23 +1561,39 @@ async fn cmd_pull(agent_ref: &str, version: &str) -> Result<()> {
     }
     let (user, agent_type) = (parts[0], parts[1]);
 
-    let url = format!("https://hub.aide.sh/v1/{}/{}/{}", user, agent_type, version);
+    // Pull from GitHub Releases: github.com/<user>/aide-agents/releases/download/<type>/<type>.tar.gz
+    // Or from aide registry repo: github.com/yiidtw/aide/releases (for aide/* agents)
+    let url = if user == "aide" {
+        format!(
+            "https://github.com/yiidtw/aide/releases/download/agents/{}-{}.tar.gz",
+            agent_type, version
+        )
+    } else {
+        format!(
+            "https://github.com/{}/aide-agents/releases/download/{}/{}-{}.tar.gz",
+            user, agent_type, agent_type, version
+        )
+    };
 
     println!("pulling {}:{}...", agent_ref, version);
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
     let resp = client.get(&url).send().await;
 
     let archive_bytes = match resp {
         Ok(r) if r.status().is_success() => r.bytes().await?.to_vec(),
         Ok(r) => {
             let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            bail!("pull failed ({}): {}", status, body);
+            bail!(
+                "pull failed ({})\nAgent not found at: {}\n\nTo install locally instead:\n  git clone <repo> && cp -r agent/ ~/.aide/types/{}/{}/",
+                status, url, user, agent_type
+            );
         }
         Err(e) => {
             bail!(
-                "failed to reach registry: {}\n(place tarball in ~/.aide/types/{}/{}/ for local testing)",
+                "failed to reach registry: {}\n\nTo install locally:\n  cp -r <agent-dir>/ ~/.aide/types/{}/{}/",
                 e, user, agent_type
             );
         }

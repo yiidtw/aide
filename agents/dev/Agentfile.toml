@@ -1,0 +1,40 @@
+[agent]
+name = "dev"
+version = "0.1.0"
+description = "aide.sh development workflow — lint, test, build, docs"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.lint]
+script = "skills/lint.sh"
+description = "Run clippy + agent linter on codebase"
+usage = "lint [agent-path]"
+
+[skills.test]
+script = "skills/test.sh"
+description = "Run test suite"
+usage = "test [filter]"
+
+[skills.check]
+script = "skills/check.sh"
+description = "Full CI check (build + clippy + test + lint agents)"
+usage = "check"
+
+[skills.build-docs]
+script = "skills/build-docs.sh"
+description = "Build mdbook user docs + cargo doc API docs"
+usage = "build-docs"
+
+[skills.release]
+script = "skills/release.sh"
+description = "Build release binary with size report"
+usage = "release [target]"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = []

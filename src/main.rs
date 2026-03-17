@@ -193,6 +193,12 @@ enum Command {
         #[arg(short, long, default_value = "3939")]
         port: u16,
     },
+    /// Set up MCP integration for Claude Code / Codex
+    SetupMcp {
+        /// Target: claude (default)
+        #[arg(default_value = "claude")]
+        target: String,
+    },
 
     // ─── Hidden aliases for backward compat ───
 
@@ -304,6 +310,7 @@ async fn main() -> Result<()> {
             let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
             return cmd_dash(&config.aide.data_dir, *port).await;
         }
+        Command::SetupMcp { target } => return cmd_setup_mcp(target),
         _ => {}
     }
 
@@ -434,7 +441,8 @@ async fn main() -> Result<()> {
         | Command::Init { .. }
         | Command::Lint { .. }
         | Command::Mcp
-        | Command::Dash { .. } => unreachable!(),
+        | Command::Dash { .. }
+        | Command::SetupMcp { .. } => unreachable!(),
     }
 
     Ok(())
@@ -448,6 +456,69 @@ fn parse_image_ref(image: &str) -> (String, String) {
     } else {
         (image.to_string(), "latest".to_string())
     }
+}
+
+// ─── MCP setup ───
+
+fn cmd_setup_mcp(target: &str) -> Result<()> {
+    match target {
+        "claude" => setup_mcp_claude(),
+        _ => bail!("unknown target '{}'. Supported: claude", target),
+    }
+}
+
+fn setup_mcp_claude() -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let settings_path = PathBuf::from(&home).join(".claude").join("settings.json");
+
+    // Find aide-sh binary path
+    let exe_path = find_aide_binary();
+
+    // Read or create settings
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Add MCP server config
+    let mcp_servers = settings
+        .as_object_mut()
+        .context("settings is not a JSON object")?
+        .entry("mcpServers")
+        .or_insert(serde_json::json!({}));
+
+    mcp_servers
+        .as_object_mut()
+        .context("mcpServers is not a JSON object")?
+        .insert(
+            "aide".to_string(),
+            serde_json::json!({
+                "command": exe_path,
+                "args": ["mcp"]
+            }),
+        );
+
+    // Write back
+    std::fs::create_dir_all(settings_path.parent().unwrap())?;
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+
+    println!("MCP server configured for Claude Code");
+    println!("  settings: {}", settings_path.display());
+    println!("  command: {} mcp", exe_path);
+    println!();
+    println!("Restart Claude Code to activate.");
+    Ok(())
+}
+
+fn find_aide_binary() -> String {
+    // Try current exe first
+    if let Ok(exe) = std::env::current_exe() {
+        return exe.to_string_lossy().to_string();
+    }
+    // Fallback
+    "aide-sh".to_string()
 }
 
 // ─── Command implementations ───
@@ -605,9 +676,23 @@ fn cmd_run_from_pulled(
 }
 
 fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bool) -> Result<()> {
-    let manifest = mgr
-        .get(instance)?
-        .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
+    let manifest = match mgr.get(instance)? {
+        Some(m) => m,
+        None => {
+            if instance.contains('/') {
+                let suggested_name = instance.rsplit('/').next().unwrap_or(instance);
+                bail!(
+                    "Instance '{}' not found.\n\nTo create it:\n  aide.sh pull {}\n  aide.sh run {} --name {}\n  aide.sh exec {} {}",
+                    instance, instance, instance, suggested_name, suggested_name, skill
+                );
+            } else {
+                bail!(
+                    "No such instance: {}\n\nAvailable instances: aide.sh ps\nTo pull from hub: aide.sh pull <user>/{}",
+                    instance, instance
+                );
+            }
+        }
+    };
 
     // Handle --help: show available skills from Agentfile
     if skill == "--help" || skill == "-h" || skill.is_empty() {

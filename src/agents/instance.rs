@@ -6,43 +6,92 @@ use std::path::{Path, PathBuf};
 
 use crate::config::AgentDef;
 
-/// Instance state on disk (~/.aide/instances/<name>/instance.toml)
+/// Persistent instance state stored on disk.
+///
+/// Each instance lives at `~/.aide/instances/<name>/instance.toml`.
+/// This manifest captures the instance's identity, its parent agent type,
+/// and any scheduled cron entries. It is created by [`InstanceManager::spawn()`]
+/// and updated whenever cron entries are added or removed.
+///
+/// ## On-disk layout
+///
+/// ```text
+/// ~/.aide/instances/<name>/
+///   instance.toml   # this manifest
+///   persona.md      # copied from agent type definition
+///   memory/         # persistent memory across runs
+///   logs/           # daily log files (YYYY-MM-DD.log)
+/// ```
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceManifest {
+    /// Instance name (e.g. `"school-assistant.ydwu"`).
     pub name: String,
+    /// The agent type this instance was spawned from (e.g. `"school-assistant"`).
     pub agent_type: String,
+    /// UTC timestamp of when this instance was created.
     pub created_at: DateTime<Utc>,
+    /// Contact email associated with this instance.
     pub email: String,
+    /// Role description (e.g. `"University course assistant"`).
     pub role: String,
+    /// Domain scopes this instance operates in (e.g. `["education", "email"]`).
     pub domains: Vec<String>,
+    /// Scheduled cron entries for this instance. Managed via
+    /// `aide.sh cron add/rm` commands.
     #[serde(default)]
     pub cron: Vec<CronEntry>,
 }
 
+/// A scheduled skill execution entry.
+///
+/// Stored within [`InstanceManifest::cron`]. The daemon (`aide.sh up`)
+/// evaluates these entries and runs the corresponding skill when the
+/// cron schedule matches.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronEntry {
+    /// Cron expression in standard 5-field format (e.g. `"0 8 * * *"`).
     pub schedule: String,
+    /// Name of the skill to execute (must match a key in `[skills.*]`).
     pub skill: String,
+    /// UTC timestamp of the last successful run, if any.
+    /// Updated by the daemon after each execution.
     #[serde(default)]
     pub last_run: Option<DateTime<Utc>>,
 }
 
-/// Runtime view of an instance (for aide ps)
+/// Runtime view of an instance, used by `aide.sh ps`.
+///
+/// This is a read-only projection of [`InstanceManifest`] enriched with
+/// runtime information (status, last activity). Built by [`InstanceManager::list()`].
 #[derive(Debug)]
 pub struct InstanceInfo {
+    /// Instance name.
     pub name: String,
+    /// Parent agent type name.
     pub agent_type: String,
+    /// Current runtime status (active or stopped).
     pub status: InstanceStatus,
+    /// When the instance was created.
     pub created_at: DateTime<Utc>,
+    /// Contact email.
     pub email: String,
+    /// Role description.
     pub role: String,
+    /// Number of cron entries registered.
     pub cron_count: usize,
+    /// Most recent log line, if any. Used for the "last activity" column in `aide.sh ps`.
     pub last_activity: Option<String>,
 }
 
+/// Runtime status of an agent instance.
+///
+/// Currently determined by the presence of a PID file (TODO).
+/// Displayed in `aide.sh ps` output.
 #[derive(Debug, PartialEq)]
 pub enum InstanceStatus {
+    /// The instance daemon is running (or presumed running).
     Active,
+    /// The instance exists on disk but no daemon process is active.
     Stopped,
 }
 
@@ -55,12 +104,23 @@ impl std::fmt::Display for InstanceStatus {
     }
 }
 
-/// Manages agent instances on disk
+/// Manages agent instances on disk.
+///
+/// Instances are stored under `~/.aide/instances/<name>/`. This manager
+/// provides CRUD operations for instances, cron management, and log access.
+///
+/// The Docker analogy: if agent types are images, instances are containers.
+/// `InstanceManager` is the container runtime.
 pub struct InstanceManager {
+    /// Root directory for all instances (typically `~/.aide/instances/`).
     base_dir: PathBuf,
 }
 
 impl InstanceManager {
+    /// Create a new instance manager rooted at the parent of `data_dir`.
+    ///
+    /// Given a data dir like `"~/.aide/data"`, the instances directory becomes
+    /// `~/.aide/instances/`. Tilde expansion is performed automatically.
     pub fn new(data_dir: &str) -> Self {
         let expanded = shellexpand::tilde(data_dir).to_string();
         // instances live alongside data_dir: ~/.aide/instances/
@@ -71,11 +131,21 @@ impl InstanceManager {
         Self { base_dir: base }
     }
 
+    /// Returns the base directory path where all instances are stored.
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
 
-    /// Spawn a new instance from an agent type definition
+    /// Spawn a new instance from an agent type definition.
+    ///
+    /// Creates the instance directory structure (`memory/`, `logs/`),
+    /// copies the persona file if one exists in the agent definition,
+    /// and writes the initial `instance.toml` manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an instance with the same name already exists.
+    /// Use `aide.sh rm <name>` to remove it first.
     pub fn spawn(
         &self,
         agent_type: &str,
@@ -118,7 +188,13 @@ impl InstanceManager {
         Ok(manifest)
     }
 
-    /// Remove an instance (optionally keeping memory)
+    /// Remove an instance from disk.
+    ///
+    /// If `keep_memory` is true, the `memory/` subdirectory is backed up
+    /// to `.<name>.memory.bak` before deletion (allowing later recovery).
+    ///
+    /// Returns `Ok(true)` if the instance was found and removed,
+    /// `Ok(false)` if the instance directory did not exist.
     pub fn remove(&self, name: &str, keep_memory: bool) -> Result<bool> {
         let inst_dir = self.base_dir.join(name);
         if !inst_dir.exists() {
@@ -138,7 +214,11 @@ impl InstanceManager {
         Ok(true)
     }
 
-    /// List all instances
+    /// List all instances, sorted alphabetically by name.
+    ///
+    /// Scans the instances base directory for subdirectories containing
+    /// `instance.toml`. Hidden directories (starting with `.`) are skipped.
+    /// Each valid instance is loaded and enriched with its last log entry.
     pub fn list(&self) -> Result<Vec<InstanceInfo>> {
         let mut instances = Vec::new();
 
@@ -180,7 +260,10 @@ impl InstanceManager {
         Ok(instances)
     }
 
-    /// Get a specific instance
+    /// Get a specific instance by name.
+    ///
+    /// Returns `Ok(None)` if the instance directory does not exist.
+    /// Returns `Err` if the directory exists but the manifest is unreadable.
     pub fn get(&self, name: &str) -> Result<Option<InstanceManifest>> {
         let inst_dir = self.base_dir.join(name);
         if !inst_dir.exists() {
@@ -189,7 +272,15 @@ impl InstanceManager {
         Ok(Some(self.load_manifest(name)?))
     }
 
-    /// Add a cron entry to an instance
+    /// Add a cron entry to an instance.
+    ///
+    /// Persists a new [`CronEntry`] to the instance manifest. Duplicate
+    /// skill names are rejected (one cron entry per skill).
+    ///
+    /// # Errors
+    ///
+    /// - Instance not found.
+    /// - A cron entry for the given skill already exists.
     pub fn cron_add(&self, name: &str, schedule: &str, skill: &str) -> Result<()> {
         let mut manifest = self
             .load_manifest(name)
@@ -210,7 +301,10 @@ impl InstanceManager {
         Ok(())
     }
 
-    /// Remove a cron entry
+    /// Remove a cron entry for a given skill.
+    ///
+    /// Returns `Ok(true)` if an entry was found and removed, `Ok(false)` if
+    /// no entry matched the given skill name.
     pub fn cron_rm(&self, name: &str, skill: &str) -> Result<bool> {
         let mut manifest = self
             .load_manifest(name)
@@ -226,7 +320,10 @@ impl InstanceManager {
         Ok(removed)
     }
 
-    /// List cron entries for an instance
+    /// List all cron entries for an instance.
+    ///
+    /// Returns the cron entries from the instance manifest.
+    /// Errors if the instance does not exist.
     pub fn cron_list(&self, name: &str) -> Result<Vec<CronEntry>> {
         let manifest = self
             .load_manifest(name)
@@ -234,7 +331,11 @@ impl InstanceManager {
         Ok(manifest.cron)
     }
 
-    /// Append a log entry
+    /// Append a timestamped log entry to the instance's daily log file.
+    ///
+    /// Logs are stored at `<instance>/logs/YYYY-MM-DD.log` with lines
+    /// formatted as `[HH:MM:SS] <entry>`. The log directory is created
+    /// automatically if it does not exist.
     pub fn append_log(&self, name: &str, entry: &str) -> Result<()> {
         let log_dir = self.base_dir.join(name).join("logs");
         fs::create_dir_all(&log_dir)?;
@@ -254,7 +355,11 @@ impl InstanceManager {
         Ok(())
     }
 
-    /// Read recent log entries
+    /// Read the most recent log entries for an instance.
+    ///
+    /// Reads from the newest log files first, collecting up to `lines` entries
+    /// in reverse chronological order, then returns them in chronological order.
+    /// Returns an empty vec if the log directory does not exist.
     pub fn read_logs(&self, name: &str, lines: usize) -> Result<Vec<String>> {
         let log_dir = self.base_dir.join(name).join("logs");
         if !log_dir.exists() {
@@ -314,7 +419,10 @@ impl InstanceManager {
     }
 }
 
-/// Derive default instance name from agent type + system user
+/// Derive the default instance name from agent type and system username.
+///
+/// Format: `<agent_type>.<username>` (e.g. `"school-assistant.ydwu"`).
+/// Falls back to `"anon"` if neither `$USER` nor `$USERNAME` is set.
 pub fn default_instance_name(agent_type: &str) -> String {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))

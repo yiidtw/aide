@@ -2,3 +2,12 @@
 title = "aide.sh"
 authors = ["YD Wu"]
 language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/yiidtw/aide"
+edit-url-template = "https://github.com/yiidtw/aide/edit/main/docs/{path}"
+site-url = "/docs/"

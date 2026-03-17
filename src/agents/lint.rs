@@ -15,12 +15,49 @@ const CREDENTIAL_PREFIXES: &[&str] = &[
     "-----BEGIN",
 ];
 
+/// Result of linting an agent directory.
+///
+/// Contains three categories of messages:
+/// - **passed**: checks that succeeded (shown with a checkmark).
+/// - **errors**: fatal problems that must be fixed before build/publish.
+/// - **warnings**: non-fatal issues that should be addressed.
+///
+/// Use [`print_lint_result()`] to display the result to the user.
 pub struct LintResult {
+    /// Checks that passed successfully.
     pub passed: Vec<String>,
+    /// Fatal errors — the agent cannot be built or published with these.
     pub errors: Vec<String>,
+    /// Non-fatal warnings — the agent works but may have issues.
     pub warnings: Vec<String>,
 }
 
+/// Lint an agent directory, performing 16 checks.
+///
+/// The checks are:
+///
+/// 1. **Parse** — `Agentfile.toml` exists and is valid TOML.
+/// 2. **Name** — `agent.name` is non-empty.
+/// 3. **Version** — `agent.version` is non-empty.
+/// 4. **Description** — `agent.description` is present and not a TODO placeholder.
+/// 5. **Author** — `agent.author` is present and not a TODO placeholder.
+/// 6. **Persona** — if `[persona]` is set, the referenced file exists.
+/// 7. **Skill completeness** — each skill has exactly one of `script` or `prompt`.
+/// 8. **Script exists** — each script file exists on disk.
+/// 9. **Script executable** — each script file has the executable bit set.
+/// 10. **Prompt exists** — each prompt file exists on disk.
+/// 11. **Cron schedule** — cron expressions are valid 5-field format.
+/// 12. **Credential scan** — no files contain known credential prefixes
+///     (`sk-ant-`, `AKIA`, `ghp_`, etc.).
+/// 13. **Skill description** — warns if a skill is missing a `description` field.
+/// 14. **Skill usage** — warns if a skill is missing a `usage` field.
+/// 15. **Seed dir** — if `[seed]` is set, the directory should exist.
+/// 16. **Env consistency** — warns if skills reference env vars not declared in `[env]`.
+///
+/// # Returns
+///
+/// A [`LintResult`] with passed, error, and warning messages.
+/// If `Agentfile.toml` cannot be parsed, returns early with just that error.
 pub fn lint_agent(dir: &Path) -> Result<LintResult> {
     let mut passed = Vec::new();
     let mut errors = Vec::new();
@@ -257,6 +294,13 @@ fn scan_for_credentials(root: &Path, dir: &Path, errors: &mut Vec<String>) -> Re
     Ok(())
 }
 
+/// Print a lint result to stdout with checkmark/warning/error symbols.
+///
+/// Output format:
+/// - `[checkmark] <passed message>`
+/// - `[warning] <warning message>`
+/// - `[cross] <error message>`
+/// - Summary line: `N warning(s), M error(s)` or `All checks passed.`
 pub fn print_lint_result(result: &LintResult) {
     for msg in &result.passed {
         println!("\u{2713} {msg}");

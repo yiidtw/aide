@@ -4,6 +4,27 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Generate a new agent project skeleton.
+///
+/// Creates a complete, lint-passing agent directory at `dir` with the
+/// following structure:
+///
+/// ```text
+/// <name>/
+///   Agentfile.toml    # manifest with [agent], [persona], [skills.hello], [seed], [env]
+///   persona.md        # starter persona with TODOs
+///   skills/
+///     hello.sh        # example executable skill script (chmod 755)
+///   seed/
+///     .gitkeep        # placeholder so the directory is tracked by git
+/// ```
+///
+/// The generated `Agentfile.toml` includes commented-out examples of
+/// `schedule` and `env` fields for quick reference.
+///
+/// # Errors
+///
+/// Returns an error if the target directory already exists (to prevent
+/// accidental overwrites). Use a fresh name or remove the existing directory.
 pub fn init_agent(name: &str, dir: &Path) -> Result<()> {
     if dir.exists() {
         bail!("directory already exists: {}", dir.display());

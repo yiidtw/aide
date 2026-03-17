@@ -356,17 +356,29 @@ impl InstanceManager {
         Ok(manifest.cron)
     }
 
+    /// Returns the path to the current daily log file for an instance.
+    ///
+    /// The path is `<instance>/logs/YYYY-MM-DD.log` based on today's UTC date.
+    /// Note: the file (and parent directory) may not exist yet.
+    pub fn log_path(&self, name: &str) -> PathBuf {
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        self.base_dir.join(name).join("logs").join(format!("{}.log", today))
+    }
+
     /// Append a timestamped log entry to the instance's daily log file.
     ///
     /// Logs are stored at `<instance>/logs/YYYY-MM-DD.log` with lines
     /// formatted as `[HH:MM:SS] <entry>`. The log directory is created
     /// automatically if it does not exist.
+    ///
+    /// Before appending, the log file is rotated if it exceeds 1 MB.
     pub fn append_log(&self, name: &str, entry: &str) -> Result<()> {
         let log_dir = self.base_dir.join(name).join("logs");
         fs::create_dir_all(&log_dir)?;
 
-        let today = Utc::now().format("%Y-%m-%d").to_string();
-        let log_file = log_dir.join(format!("{}.log", today));
+        let log_file = self.log_path(name);
+
+        self.maybe_rotate_log(&log_file)?;
 
         let timestamp = Utc::now().format("%H:%M:%S").to_string();
         let line = format!("[{}] {}\n", timestamp, entry);
@@ -421,6 +433,28 @@ impl InstanceManager {
 
         result.reverse();
         Ok(result)
+    }
+
+    /// Rotate a log file if it exceeds 1 MB.
+    ///
+    /// Keeps at most 2 rotated copies (`.log.1` and `.log.2`).
+    /// The oldest rotated file is deleted to make room.
+    fn maybe_rotate_log(&self, log_file: &Path) -> Result<()> {
+        if let Ok(meta) = fs::metadata(log_file) {
+            if meta.len() > 1_048_576 {
+                // 1 MB
+                let rotated_1 = log_file.with_extension("log.1");
+                let rotated_2 = log_file.with_extension("log.2");
+                if rotated_2.exists() {
+                    fs::remove_file(&rotated_2)?;
+                }
+                if rotated_1.exists() {
+                    fs::rename(&rotated_1, &rotated_2)?;
+                }
+                fs::rename(log_file, &rotated_1)?;
+            }
+        }
+        Ok(())
     }
 
     fn save_manifest(&self, name: &str, manifest: &InstanceManifest) -> Result<()> {

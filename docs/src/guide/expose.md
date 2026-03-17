@@ -1,67 +1,68 @@
-# Expose (Telegram / Email)
+# Expose (Email / PWA)
 
-Expose an agent to external messaging platforms so users can interact with it outside the terminal.
+Give your agents an address so anyone can talk to them — no terminal required.
 
-## Telegram
+## Overview
 
-### Setup
+| Channel | Address | Status |
+|---------|---------|--------|
+| **Email** | `agent+user@aide.sh` | Planned |
+| **PWA** | `app.aide.sh/instance` | Planned |
 
-1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
-2. Copy the bot token
-3. Expose your agent:
+Both channels are platform-controlled — aide.sh manages the infra, not third-party APIs.
 
-```bash
-$ aide.sh expose jenny telegram --token $TG_TOKEN
-Telegram bot @jenny_aide_bot connected.
-Listening for messages...
+## Email Gateway (planned)
+
+Every agent gets an email address:
+
+```
+jenny+ydwu@aide.sh
 ```
 
 ### How it works
 
-The Telegram gateway uses long polling (no webhook, no public IP needed):
+1. Anyone sends an email to `jenny+ydwu@aide.sh`
+2. Cloudflare Email Worker receives the message
+3. Routes to agent: `aide.sh exec -p jenny.ydwu "<email body>"`
+4. Agent runs matching skills
+5. Reply sent back via Resend/SMTP
 
-1. User sends a message to the bot on Telegram
-2. aide.sh receives the message via Telegram Bot API
-3. The message is routed to the agent as a semantic exec (`-p`)
-4. The LLM picks the right skill, executes it, and formats a reply
-5. The reply is sent back to the Telegram chat
+### Why email
 
-### Example interaction
+- **Zero install** — everyone already has an email client
+- **Mobile native** — works in any phone's mail app
+- **We control it** — aide.sh domain, our routing, no third-party bot limits
+
+## PWA (planned)
+
+A chat interface at `app.aide.sh`:
 
 ```
-User:     do I have new assignments?
-Bot:      Checking COOL LMS...
-          You have 2 new assignments:
-          - VLSI Design HW3 (due Jun 15)
-          - ML Lab Final Proposal (due Jun 20)
+app.aide.sh/jenny.ydwu → chat UI → WebSocket → aide.sh exec
 ```
 
-### Running in background
+### Features
+
+- Real-time chat with your agents
+- Works on iOS, Android, Desktop (Add to Home Screen)
+- Push notifications via Service Worker
+- No App Store required
+
+## Self-hosted integrations
+
+Power users can integrate their agents with any messaging platform using
+the MCP server or direct `aide.sh exec` calls:
 
 ```bash
-$ aide.sh expose jenny telegram --token $TG_TOKEN --daemon
-Telegram bot started in background (PID 54321)
+# Your own Telegram bot
+your-telegram-bot → aide.sh exec -p jenny.ydwu "message"
+
+# Your own Discord bot
+your-discord-bot → aide.sh exec -p jenny.ydwu "message"
+
+# Any webhook
+curl -X POST your-server/agent -d "message" → aide.sh exec
 ```
 
-Or include it in the daemon:
-
-```bash
-$ aide.sh up
-```
-
-## Future gateways
-
-These are planned but not yet implemented:
-
-- **Email gateway** — agent receives email, processes it, and replies
-- **PWA** — browser-based chat interface served by the dashboard
-
-## Self-hosted vs platform modes
-
-aide.sh expose runs entirely on your machine:
-
-- No data leaves your network except Telegram API calls
-- Secrets stay in the local vault
-- The agent process runs locally
-
-There is no hosted/cloud mode. All processing is local.
+The MCP server (`aide.sh mcp`) is the recommended integration point for
+LLM-based callers. For simple message-in/message-out, shell out to `aide.sh exec`.

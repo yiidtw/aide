@@ -16,7 +16,7 @@
 - [Cron & Scheduling](./guide/cron.md)
 - [MCP Integration](./guide/mcp.md)
 - [Dashboard](./guide/dashboard.md)
-- [Expose (Telegram / Email)](./guide/expose.md)
+- [Expose (Email / PWA)](./guide/expose.md)
 
 # Command Reference
 
@@ -26,7 +26,6 @@
 - [aide.sh init / lint](./commands/init-lint.md)
 - [aide.sh mcp](./commands/mcp.md)
 - [aide.sh dash](./commands/dash.md)
-- [aide.sh expose](./commands/expose.md)
 - [aide.sh mount / unmount](./commands/mount.md)
 
 # Architecture

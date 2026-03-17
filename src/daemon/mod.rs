@@ -65,6 +65,9 @@ impl Daemon {
         // Start Telegram bots for instances that declare [expose.telegram]
         self.start_telegram_bots();
 
+        // Start inbox poller (polls CF Worker email gateway)
+        self.start_inbox_poller();
+
         info!("aide daemon ready, waiting for signals");
 
         // Wait for shutdown signal
@@ -158,6 +161,94 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    fn start_inbox_poller(&self) {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let auth_path = PathBuf::from(&home).join(".aide").join("auth.json");
+
+        let username = if let Ok(content) = std::fs::read_to_string(&auth_path) {
+            serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v["username"].as_str().map(|s| s.to_string()))
+        } else {
+            None
+        };
+
+        let Some(username) = username else {
+            info!("no auth.json found, inbox polling disabled");
+            return;
+        };
+
+        let data_dir = self.config.aide.data_dir.clone();
+        info!(username = %username, "starting inbox poller (60s interval)");
+
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let gateway_url = "https://aide-email-gateway.yiidtw.workers.dev";
+
+            loop {
+                interval.tick().await;
+
+                let url = format!("{}/inbox/{}", gateway_url, username);
+                match client.get(&url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(body) = resp.json::<serde_json::Value>().await {
+                            let messages = body["messages"].as_array();
+                            if let Some(msgs) = messages {
+                                for msg in msgs {
+                                    let from = msg["from"].as_str().unwrap_or("?");
+                                    let subject = msg["subject"].as_str().unwrap_or("?");
+                                    let to = msg["to"].as_str().unwrap_or("?");
+                                    let id = msg["id"].as_str().unwrap_or("");
+
+                                    // Parse agent name from "to" field: agent.user@aide.sh
+                                    let agent = to
+                                        .split('@')
+                                        .next()
+                                        .unwrap_or("")
+                                        .split('.')
+                                        .next()
+                                        .unwrap_or("");
+
+                                    info!(from = %from, subject = %subject, agent = %agent, "inbox message");
+
+                                    // Log to the matching instance
+                                    let mgr = InstanceManager::new(&data_dir);
+                                    if let Ok(instances) = mgr.list() {
+                                        for inst in &instances {
+                                            if inst.agent_type == agent
+                                                || inst.name.starts_with(agent)
+                                            {
+                                                let _ = mgr.append_log(
+                                                    &inst.name,
+                                                    &format!(
+                                                        "inbox: from={} subject=\"{}\"",
+                                                        from, subject
+                                                    ),
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    // Ack the message
+                                    let _ = client
+                                        .delete(&format!(
+                                            "{}/inbox/{}/{}",
+                                            gateway_url, username, id
+                                        ))
+                                        .send()
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                    _ => {} // silent on error
+                }
+            }
+        });
     }
 
     fn start_cron_ticker(&self) {

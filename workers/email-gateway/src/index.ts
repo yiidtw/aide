@@ -1,5 +1,6 @@
 export interface Env {
   RESEND_API_KEY: string;
+  INBOX: KVNamespace;
 }
 
 export default {
@@ -26,9 +27,20 @@ export default {
     // Extract plain text body (simple extraction)
     const body = extractTextBody(rawEmail);
 
-    // For now, just forward to admin with metadata
-    // TODO: When we have an API server, POST to it instead
-    // For now, log the parsed info and forward
+    // Store message in KV for daemon polling
+    const msg = {
+      id: crypto.randomUUID(),
+      from,
+      to,
+      subject,
+      timestamp: new Date().toISOString(),
+      body,
+    };
+
+    await env.INBOX.put(`msg:${msg.id}`, JSON.stringify(msg), {
+      expirationTtl: 86400,
+    }); // 24h TTL
+
     console.log(
       `Email received: agent=${agentName} user=${username} from=${from} subject=${subject}`,
     );
@@ -38,6 +50,52 @@ export default {
 
     // Also forward original to admin for monitoring
     await message.forward("yiidtw@gmail.com");
+  },
+
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    // GET /inbox/:username — list messages for this user
+    if (request.method === "GET" && url.pathname.startsWith("/inbox/")) {
+      const username = url.pathname.split("/")[2];
+      if (!username) {
+        return new Response(JSON.stringify({ error: "missing username" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      const list = await env.INBOX.list({ prefix: "msg:" });
+      const messages = [];
+      for (const key of list.keys) {
+        const raw = await env.INBOX.get(key.name);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          // Filter by username (to field contains username)
+          if (parsed.to.includes(username)) {
+            messages.push(parsed);
+          }
+        }
+      }
+      return new Response(JSON.stringify({ messages }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // DELETE /inbox/:username/:id — ack a message
+    if (
+      request.method === "DELETE" &&
+      url.pathname.match(/^\/inbox\/[^/]+\/[^/]+$/)
+    ) {
+      const parts = url.pathname.split("/");
+      const id = parts[3];
+      await env.INBOX.delete(`msg:${id}`);
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response("aide.sh email gateway", { status: 200 });
   },
 };
 

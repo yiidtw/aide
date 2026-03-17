@@ -3,3 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 
 # RESEND_API_KEY set via: wrangler secret put RESEND_API_KEY
+
+# KV namespace for inbox polling
+# Create with: wrangler kv namespace create INBOX
+# Then replace the id below with the actual namespace ID
+[[kv_namespaces]]
+binding = "INBOX"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

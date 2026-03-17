@@ -207,6 +207,7 @@ impl Vault {
     }
 
     /// Export vault back to plaintext (for reading secrets)
+    #[allow(dead_code)]
     pub async fn get_env(&self) -> Result<std::collections::HashMap<String, String>> {
         let data = self.decrypt().await?;
         let text = String::from_utf8(data)?;

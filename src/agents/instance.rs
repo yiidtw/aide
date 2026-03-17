@@ -72,6 +72,7 @@ pub struct InstanceInfo {
     /// Current runtime status (active or stopped).
     pub status: InstanceStatus,
     /// When the instance was created.
+    #[allow(dead_code)]
     pub created_at: DateTime<Utc>,
     /// Contact email.
     pub email: String,
@@ -92,6 +93,7 @@ pub enum InstanceStatus {
     /// The instance daemon is running (or presumed running).
     Active,
     /// The instance exists on disk but no daemon process is active.
+    #[allow(dead_code)]
     Stopped,
 }
 

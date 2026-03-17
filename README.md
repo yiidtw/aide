@@ -39,6 +39,31 @@ If you know Docker, you know aide.sh.
 | Push to registry | `aide.sh push agent` | `docker push image` |
 | Search registry | `aide.sh search query` | `docker search query` |
 
+## How It Works
+
+aide.sh treats AI agents like containers. An **Agentfile.toml** defines the
+agent's persona, skills (shell scripts), and required secrets. You `build` an
+image, `push` it to a registry, and others `pull` and `run` it. At runtime,
+the agent's skills execute in a sandboxed process with scoped environment
+variables injected from an encrypted vault.
+
+## Platform Support
+
+| Platform | Architecture | Status |
+|---|---|---|
+| Linux | x86_64 | Supported |
+| Linux | aarch64 | Supported |
+| macOS | x86_64 (Intel) | Supported |
+| macOS | arm64 (Apple Silicon) | Supported |
+
+Single static binary, built with Rust. No runtime dependencies.
+
+## Security
+
+- **Vault encryption** — secrets are encrypted at rest using [age](https://age-encryption.org/)
+- **Credential leak scanning** — `aide.sh build` rejects images containing hard-coded secrets
+- **Scoped env vars** — each agent only receives the environment variables declared in its Agentfile
+
 ## Agentfile.toml
 
 Define your agent in a single file:

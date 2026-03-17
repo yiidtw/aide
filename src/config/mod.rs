@@ -29,6 +29,7 @@ fn default_data_dir() -> String {
     "~/.aide/data".to_string()
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Machine {
     pub host: String,
@@ -38,6 +39,7 @@ pub struct Machine {
     pub always_on: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct DispatchRule {
     pub on: String,
@@ -47,6 +49,7 @@ pub struct DispatchRule {
     pub fallback: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default, Deserialize)]
 pub struct SyncConfig {
     #[serde(default)]
@@ -57,6 +60,7 @@ pub struct SyncConfig {
     pub memory: Option<SyncMemory>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SyncVault {
     pub method: String,
@@ -70,6 +74,7 @@ fn default_trigger() -> String {
     "on-change".to_string()
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SyncSkills {
     pub method: String,
@@ -79,6 +84,7 @@ pub struct SyncSkills {
     pub auto_pull: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SyncMemory {
     pub method: String,
@@ -126,6 +132,7 @@ impl AideConfig {
         Ok(config)
     }
 
+    #[allow(dead_code)]
     pub fn this_machine(&self) -> Option<(&String, &Machine)> {
         let hostname = hostname::get().ok()?.into_string().ok()?;
         self.machines.iter().find(|(_, m)| {
@@ -133,6 +140,7 @@ impl AideConfig {
         })
     }
 
+    #[allow(dead_code)]
     pub fn dispatch_to(&self, task: &str) -> Option<&str> {
         self.dispatch.get(task).map(|r| r.on.as_str())
     }

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod agents;
 mod config;
 mod daemon;
@@ -22,7 +20,7 @@ use agents::instance::{self, InstanceManager};
 use config::AideConfig;
 
 #[derive(Parser)]
-#[command(name = "aide.sh", about = "Docker for AI agents — aide.sh", version)]
+#[command(name = "aide-sh", about = "Docker for AI agents — aide.sh", version)]
 struct Cli {
     /// Path to aide.toml config file
     #[arg(short, long, default_value = "aide.toml")]

@@ -3,6 +3,7 @@ use tracing::info;
 
 use crate::config::AgentDef;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct AgentState {
     pub name: String,
@@ -11,6 +12,7 @@ pub struct AgentState {
     pub status: AgentStatus,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum AgentStatus {
     Stopped,
@@ -18,10 +20,12 @@ pub enum AgentStatus {
     Error(String),
 }
 
+#[allow(dead_code)]
 pub struct AgentRegistry {
     agents: HashMap<String, AgentState>,
 }
 
+#[allow(dead_code)]
 impl AgentRegistry {
     pub fn from_config(defs: &HashMap<String, AgentDef>) -> Self {
         let agents = defs

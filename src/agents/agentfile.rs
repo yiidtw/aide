@@ -84,6 +84,7 @@ pub struct AgentfileSpec {
     /// The `[soul]` table. Optional. LLM runtime hints for daemon mode.
     /// Ignored when the agent runs under an MCP caller (Claude Code, etc.).
     #[serde(default)]
+    #[allow(dead_code)]
     pub soul: Option<SoulSection>,
     /// The `[expose]` table. Optional. Declares external messaging channels.
     #[serde(default)]
@@ -113,6 +114,7 @@ pub struct LimitsSection {
     /// Maximum LLM tokens per `-p` (standalone mode) invocation.
     /// Default: 4096.
     #[serde(default = "default_max_tokens")]
+    #[allow(dead_code)]
     pub max_tokens: u64,
     /// Maximum retry attempts on skill failure. Default: 0 (no retry).
     #[serde(default)]
@@ -159,6 +161,7 @@ pub struct TelegramExpose {
 ///
 /// In MCP mode (Claude Code, Codex, Gemini), this section is ignored —
 /// the caller's frontier model is used instead.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SoulSection {
     /// Preferred local model for daemon mode (e.g. `"llama3.2:3b"`).

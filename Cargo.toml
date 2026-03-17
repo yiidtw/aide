@@ -1,6 +1,6 @@
 [package]
 name = "aide-sh"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "aide.sh — Docker for AI agents"
 license = "MIT"

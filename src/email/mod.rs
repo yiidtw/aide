@@ -55,6 +55,7 @@ pub struct Message {
     pub payload: Option<Payload>,
     pub snippet: Option<String>,
     #[serde(rename = "internalDate")]
+    #[allow(dead_code)]
     pub internal_date: Option<String>,
 }
 
@@ -80,6 +81,7 @@ struct Label {
     name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct ModifyRequest {
     #[serde(rename = "addLabelIds")]
@@ -87,6 +89,7 @@ struct ModifyRequest {
 }
 
 /// Summary of a polled email for triage
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EmailSummary {
     pub id: String,
@@ -115,6 +118,7 @@ impl GmailPoller {
     }
 
     /// Load credentials from a token JSON file + env vars
+    #[allow(dead_code)]
     pub fn from_token_file(
         token_path: &Path,
         client_id: &str,
@@ -323,6 +327,7 @@ impl GmailPoller {
 }
 
 /// Load Gmail poller credentials from vault env or fallback to files
+#[allow(dead_code)]
 pub fn load_gmail_credentials(
     env: &HashMap<String, String>,
 ) -> Option<(String, String, String)> {

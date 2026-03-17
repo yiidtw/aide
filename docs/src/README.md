@@ -2,40 +2,65 @@
 
 **Deploy AI agents, just like Docker.**
 
-aide.sh is a CLI tool for packaging, deploying, and managing AI agents. Same agent works with or without AI — add `-p` to think.
+aide.sh is a CLI tool for packaging, deploying, and managing AI agents. One Rust binary, no runtime dependencies.
 
 ## Why aide.sh?
 
 - **Docker mental model** — `build`, `run`, `exec`, `push`, `pull`. If you know Docker, you know aide.sh.
-- **LLM optional** — agents are structured skill runners. Add an LLM and they become autonomous reasoners.
-- **Local-first** — agents run on your machine, secrets stay in your vault.
-- **MCP native** — Claude, Codex, Gemini can control your agents as subagents.
-- **One binary** — no Python, no Node.js, no Docker daemon.
+- **Works without AI** — agents are structured skill runners (shell scripts). No LLM required.
+- **Three execution modes** — ad-hoc (human drives), sub-agent (LLM drives via MCP), standalone (`-p` flag: agent has its own LLM brain).
+- **Local-first** — agents run on your machine, secrets stay in your encrypted vault.
+- **MCP native** — Claude Code, Codex, Gemini can control your agents as subagents.
 
 ## Quick taste
 
 ```bash
-# scaffold & deploy
-aide.sh init my-agent
-aide.sh build my-agent/
-aide.sh run my-agent --name bot
+# install
+curl -fsSL https://aide.sh/install | bash
 
-# use it
-aide.sh exec bot hello world        # explicit — you drive
-aide.sh exec -p bot "what's up?"    # semantic — AI drives
+# pull an agent from the hub
+aide-sh pull aide/github-reviewer
+aide-sh run aide/github-reviewer --name reviewer
 
-# monitor
-aide.sh dash                        # web dashboard at localhost:3939
+# use it — no AI needed
+aide-sh exec reviewer pr list
+aide-sh exec reviewer diff
+
+# or let AI decide what to call
+aide-sh exec -p reviewer "are there any PRs that need review?"
+
+# monitor everything
+aide-sh dash
 ```
+
+**What does `-p` do?** It gives the agent a brain. Without `-p`, you call skills directly by name. With `-p`, an LLM (Claude CLI or local ollama) reads the agent's persona and skill list, interprets your natural language query, and decides which skills to invoke.
 
 ## Dashboard
 
-![aide.sh dashboard](./images/dash-jenny.png)
+![aide.sh dashboard](./images/dash-demo.png)
 
 Built-in observability. See every agent's skills, cron jobs, usage analytics, and logs — all in one place.
+
+## How it works
+
+```
+Agentfile.toml          ← agent manifest (like Dockerfile)
+├── persona.md          ← agent personality
+├── skills/*.sh         ← executable capabilities (shell scripts)
+├── seed/               ← initial knowledge
+└── [limits]            ← timeout, token budget, retry policy
+
+aide-sh build agent/    → .tar.gz archive
+aide-sh push agent/     → upload to hub
+aide-sh pull user/agent → download from hub
+aide-sh run user/agent  → create instance
+aide-sh exec inst skill → run a skill
+aide-sh up              → daemon: cron + dashboard
+```
 
 ## Next steps
 
 - [Installation](./getting-started/install.md) — get the binary
 - [Quick Start](./getting-started/quickstart.md) — build your first agent in 5 minutes
 - [Concepts](./getting-started/concepts.md) — images, instances, skills, vault
+- [Execution Modes](./arch/semantic-injection.md) — ad-hoc, sub-agent, standalone

@@ -1,61 +1,81 @@
-# Architecture: Semantic Injection
+# Architecture: Agent Execution Modes
 
-Same agent, with or without AI. Add `-p` to think.
+aide.sh agents have three execution modes. Same agent, same skills — different brains.
 
-## Two execution modes
+## Three Modes
 
-Every aide.sh agent supports two ways of being called:
-
-### Explicit mode (default)
+### 1. Ad-hoc (no LLM)
 
 ```bash
 aide.sh exec school cool courses
-aide.sh exec school email unread
-aide.sh exec school cool assignments
+aide.sh exec school mail unread
 ```
 
-The caller names the exact skill and passes structured arguments. The skill script runs directly. No LLM is involved.
+Human directly calls a skill by name. Script runs, output returns. No AI involved.
+This is like calling a Docker container's command directly.
 
-### Semantic mode (`-p` flag)
+### 2. Sub-agent (caller's LLM)
+
+```
+Claude Code / Codex / Gemini
+  └── MCP: aide_exec(school, cool, courses)
+```
+
+A frontier CLI model controls the agent via MCP. The caller's LLM decides what
+skills to invoke. The agent doesn't need its own brain — the caller IS the brain.
+
+### 3. Standalone (agent has its own LLM)
 
 ```bash
 aide.sh exec -p school "what's due this week?"
-aide.sh exec -p school "check if any professors replied"
-aide.sh exec -p school "summarize my grades"
 ```
 
-The `-p` flag activates semantic injection. The natural language query is routed through an LLM, which selects the appropriate skill(s) and arguments based on the agent's persona and skill descriptions.
+The `-p` flag gives the agent a soul. The query is piped through an LLM
+(`claude -p` or local ollama) which reads the persona, examines available skills,
+and autonomously decides what to call.
 
-## How semantic mode works
+```
+human → LLM (claude -p / ollama) → selects skill → executes → LLM → human
+```
 
-1. The query and the agent's skill catalog (names, descriptions, usage strings) are composed into a prompt.
-2. The LLM (caller-provided or local Ollama) interprets the query and maps it to one or more skill invocations.
-3. The skill scripts execute normally.
-4. Results are returned, optionally summarized by the LLM.
+## How `-p` works
 
-The skill scripts themselves are unchanged between modes. Semantic mode wraps the dispatch layer, not the execution layer.
+1. Reads `persona.md` — who the agent is
+2. Reads skill catalog — what it can do (names, descriptions, usage)
+3. Composes a prompt: "Given these skills, answer this query"
+4. LLM selects skill + args
+5. aide.sh executes the skill
+6. LLM formats the output for the human
+
+## LLM Resolution Order
+
+When `-p` is used, aide.sh looks for an LLM in this order:
+
+1. `claude -p` — if Claude Code CLI is installed
+2. `ollama` — if a local model is available
+3. `[soul]` section in Agentfile.toml — preferred model hint
+
+```toml
+[soul]
+prefer = "llama3.2:3b"
+```
+
+## Comparison
+
+| | Ad-hoc | Sub-agent | Standalone |
+|---|---|---|---|
+| Who decides | Human | Caller's LLM | Agent's LLM |
+| Trigger | `aide.sh exec` | MCP `aide_exec` | `aide.sh exec -p` |
+| LLM needed | No | Caller has it | Yes (claude/ollama) |
+| Offline | Yes | No | Depends on LLM |
+| Use case | Scripts, cron, CI | Claude Code workflows | Chat, email, Telegram |
 
 ## Why this matters
 
-**LLM is a runtime, not a dependency.** An agent that works in explicit mode will always work -- on any machine, offline, without API keys. Semantic mode is an enhancement, not a requirement.
+**LLM is a runtime, not a dependency.** An agent that works in ad-hoc mode will
+always work — on any machine, offline, without API keys. The `-p` flag and MCP
+are enhancements, not requirements.
 
-This is the opposite of frameworks where the LLM is baked into the agent definition. In aide.sh, the agent is a set of capabilities. The LLM is an optional accelerator that makes those capabilities accessible via natural language.
-
-## Comparison with other frameworks
-
-| Property | aide.sh | LangChain / CrewAI / AutoGen |
-|----------|---------|------------------------------|
-| LLM required? | No (explicit mode works without) | Yes (core dependency) |
-| Skill definition | Bash scripts + markdown prompts | Python functions + LLM chains |
-| Offline capable? | Yes (explicit mode) | No |
-| Human fallback? | Human is the LLM in terminal mode | No equivalent |
-| Package size | KB (scripts + markdown) | MB+ (Python deps + model configs) |
-
-## The `-p` mental model
-
-Think of `-p` as "pipe through intelligence." Without it, you talk to the agent in its native protocol (skill names + args). With it, you talk in natural language and the LLM translates.
-
-```
-Without -p:  human -> skill -> output
-With -p:     human -> LLM -> skill -> output -> LLM -> human
-```
+This is the opposite of frameworks where the LLM is baked into the agent. In aide.sh,
+the agent is a set of capabilities. The LLM — whether frontier or local — is an
+optional brain that makes those capabilities accessible via natural language.

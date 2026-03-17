@@ -35,5 +35,5 @@
 # Architecture
 
 - [Agent Soul — LLM as Runtime](./arch/soul.md)
-- [Semantic Injection](./arch/semantic-injection.md)
+- [Execution Modes](./arch/semantic-injection.md)
 - [Docker Comparison](./arch/docker-comparison.md)

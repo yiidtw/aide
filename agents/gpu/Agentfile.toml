@@ -1,0 +1,28 @@
+[agent]
+name = "gpu"
+version = "0.1.0"
+description = "GPU daemon — Ollama proxy + Whisper transcription with VRAM-aware scheduling"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.status]
+script = "skills/status.sh"
+description = "Show GPU status (VRAM, loaded models, queue depth)"
+usage = "status"
+
+[skills.serve]
+script = "skills/serve.sh"
+description = "Start the GPU daemon (FastAPI server)"
+usage = "serve [--port PORT]"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = ["OLLAMA_HOST", "GPU_SERVER_PORT", "WHISPER_MODEL_SIZE"]
+
+[soul]
+prefer = "llama3.2:3b"

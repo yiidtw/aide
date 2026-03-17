@@ -31,6 +31,8 @@ axum = "0.8"
 rust-embed = "8"
 mime_guess = "2"
 tower-http = { version = "0.6", features = ["cors"] }
+ratatui = "0.29"
+crossterm = "0.28"
 
 [profile.release]
 strip = true

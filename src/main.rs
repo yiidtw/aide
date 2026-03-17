@@ -53,6 +53,9 @@ enum Command {
         /// Allocate pseudo-TTY
         #[arg(short = 't', long = "tty")]
         tty: bool,
+        /// Standalone mode: pipe query through LLM
+        #[arg(short = 'p', long = "prompt")]
+        prompt_mode: bool,
         /// Instance name
         instance: String,
         /// Command to execute (skill + args)
@@ -328,9 +331,13 @@ async fn main() -> Result<()> {
         Command::Run { image, name, .. } | Command::Spawn { agent_type: image, name } => {
             cmd_run(&config, &mgr, &image, name.as_deref())?;
         }
-        Command::Exec { instance, command, interactive, tty } => {
+        Command::Exec { instance, command, interactive, tty, prompt_mode } => {
             let skill = command.join(" ");
-            cmd_exec(&mgr, &instance, &skill, interactive || tty)?;
+            if prompt_mode {
+                cmd_exec_prompt(&mgr, &instance, &skill)?;
+            } else {
+                cmd_exec(&mgr, &instance, &skill, interactive || tty)?;
+            }
         }
         Command::Call { instance, skill } => {
             cmd_exec(&mgr, &instance, &skill.join(" "), false)?;
@@ -757,6 +764,132 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
 
     let _ = manifest; // used for future interactive mode
     Ok(())
+}
+
+fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result<()> {
+    let _manifest = mgr
+        .get(instance)?
+        .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
+
+    let inst_dir = mgr.base_dir().join(instance);
+
+    // Read persona
+    let persona = std::fs::read_to_string(inst_dir.join("persona.md")).unwrap_or_default();
+
+    // Read skill catalog from Agentfile
+    let skill_info = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
+        spec.format_help(instance)
+    } else {
+        String::new()
+    };
+
+    // Compose prompt for Claude
+    let prompt = format!(
+        "You are an agent assistant. Given the following agent persona and skills, \
+         answer the user's query by deciding which skill(s) to call.\n\n\
+         IMPORTANT: Respond ONLY with the skill command to execute, in this exact format:\n\
+         EXEC: <skill_name> [args]\n\n\
+         The skill_name must be ONLY the skill name (e.g. 'cool', 'mail', 'briefing'), NOT the instance name.\n\
+         If you need multiple skills, put each on its own line starting with EXEC:\n\
+         If no skill matches, respond with: NONE: <explanation>\n\n\
+         ## Persona\n{}\n\n## Available Skills\n{}\n\n## User Query\n{}",
+        persona, skill_info, query
+    );
+
+    // Call claude -p
+    let output = std::process::Command::new("claude")
+        .arg("-p")
+        .arg(&prompt)
+        .output();
+
+    let claude_response = match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).to_string()
+        }
+        Ok(o) => {
+            // Try ollama as fallback
+            if let Some(resp) = try_ollama(&prompt) {
+                resp
+            } else {
+                bail!("claude -p failed: {}", String::from_utf8_lossy(&o.stderr));
+            }
+        }
+        Err(_) => {
+            // claude not found, try ollama
+            if let Some(resp) = try_ollama(&prompt) {
+                resp
+            } else {
+                bail!("No LLM available. Install Claude Code CLI (claude) or Ollama.");
+            }
+        }
+    };
+
+    mgr.append_log(instance, &format!("prompt: {}", query))?;
+
+    // Parse response — look for EXEC: lines
+    let mut executed = false;
+    for line in claude_response.lines() {
+        let line = line.trim();
+        if let Some(cmd) = line.strip_prefix("EXEC:") {
+            let cmd = cmd.trim();
+            let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+            let skill_name = parts[0];
+            let skill_args = if parts.len() > 1 { parts[1] } else { "" };
+
+            println!("[running {} {}]", skill_name, skill_args);
+
+            // Execute the skill
+            let scoped_env = load_scoped_env(&inst_dir, Some(skill_name))?;
+            let local_script = inst_dir.join("skills").join(format!("{}.sh", skill_name));
+
+            if local_script.exists() {
+                let (exit_code, stdout, stderr) =
+                    exec_skill_script(&local_script, skill_args, &inst_dir, &scoped_env)?;
+                if !stdout.is_empty() {
+                    print!("{}", stdout);
+                }
+                if !stderr.is_empty() {
+                    eprint!("{}", stderr);
+                }
+                mgr.append_log(
+                    instance,
+                    &format!(
+                        "prompt-exec: {} → {} (exit {})",
+                        cmd,
+                        if exit_code == 0 { "ok" } else { "fail" },
+                        exit_code
+                    ),
+                )?;
+            } else {
+                println!("skill not found: {}", skill_name);
+            }
+            executed = true;
+        } else if let Some(explanation) = line.strip_prefix("NONE:") {
+            println!("{}", explanation.trim());
+            executed = true;
+        }
+    }
+
+    // If no EXEC: or NONE: found, just print the raw response
+    if !executed {
+        print!("{}", claude_response);
+    }
+
+    Ok(())
+}
+
+fn try_ollama(prompt: &str) -> Option<String> {
+    let output = std::process::Command::new("ollama")
+        .args(["run", "llama3.2:3b"])
+        .arg(prompt)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        None
+    }
 }
 
 fn cmd_stop(mgr: &InstanceManager, instance: &str) -> Result<()> {

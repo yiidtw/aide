@@ -1,0 +1,49 @@
+[agent]
+name = "infra"
+version = "0.1.0"
+description = "Infrastructure agent — DNS, deploy, auth, monitoring across all projects"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.dns]
+script = "skills/dns.sh"
+description = "Cloudflare DNS operations"
+usage = "dns [list ZONE|set ZONE NAME TYPE VALUE|delete ZONE ID]"
+env = ["CLOUDFLARE_API_TOKEN"]
+
+[skills.deploy]
+script = "skills/deploy.sh"
+description = "Deploy static site to CF Pages"
+usage = "deploy <dir> <project-name>"
+env = ["CLOUDFLARE_API_TOKEN"]
+
+[skills.lock]
+script = "skills/lock.sh"
+description = "Lock a site with CF Access auth"
+usage = "lock <domain>"
+env = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+[skills.sites]
+script = "skills/sites.sh"
+description = "List all CF Pages projects and their domains"
+usage = "sites"
+env = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+[skills.status]
+script = "skills/status.sh"
+description = "Check status of all domains"
+usage = "status"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = ["CLOUDFLARE_API_TOKEN"]
+optional = ["CLOUDFLARE_ACCOUNT_ID"]
+
+[limits]
+max_timeout = 60
+max_tokens = 4096
+max_retry = 1

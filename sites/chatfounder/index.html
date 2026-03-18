@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>chatfounder.ai — Your AI startup team. One command.</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --fg: #e0e0e0;
+      --accent: #10b981;
+      --accent-dim: #059669;
+      --muted: #6b7280;
+      --surface: #111111;
+      --border: #1f1f1f;
+      --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Nav */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1.5rem 2rem;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    nav .brand {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    nav .links {
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.85rem;
+    }
+    nav .links a { color: var(--muted); }
+    nav .links a:hover { color: var(--fg); }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .hero h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      color: var(--fg);
+      margin-bottom: 1rem;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p.subtitle {
+      font-size: 1rem;
+      color: var(--muted);
+      margin-bottom: 2.5rem;
+      max-width: 540px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* Install box */
+    .install-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.5rem;
+      max-width: 520px;
+      margin: 0 auto 1rem;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    .install-box .prompt { color: var(--accent); }
+    .install-box code { color: var(--fg); }
+
+    /* Sections */
+    section {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+    }
+    section h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 2rem;
+      color: var(--fg);
+    }
+
+    /* How it works */
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .step {
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-dim);
+      color: #fff;
+      border-radius: 50%;
+      font-size: 0.85rem;
+      font-weight: 700;
+    }
+    .step-body h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+    .step-body p {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    /* Comparison */
+    .comparison {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+    .compare-col {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.5rem;
+    }
+    .compare-col h3 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+    }
+    .compare-col.them h3 { color: var(--muted); }
+    .compare-col.us h3 { color: var(--accent); }
+    .compare-col ul {
+      list-style: none;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .compare-col ul li {
+      padding: 0.3rem 0;
+    }
+    .compare-col ul li::before {
+      content: "- ";
+      color: var(--border);
+    }
+    .compare-col.us ul li { color: var(--fg); }
+    .compare-col.us ul li::before { color: var(--accent); content: "+ "; }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 3rem 2rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      border-top: 1px solid var(--border);
+      max-width: 720px;
+      margin: 2rem auto 0;
+    }
+
+    @media (max-width: 600px) {
+      .hero h1 { font-size: 1.6rem; }
+      .comparison { grid-template-columns: 1fr; }
+      nav { flex-direction: column; gap: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="brand">chatfounder.ai</div>
+    <div class="links">
+      <a href="#">Docs</a>
+      <a href="https://aide.sh">aide.sh</a>
+      <a href="https://github.com/yiidtw/aide">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="hero">
+    <h1>Your AI startup team. <span>One command.</span></h1>
+    <p class="subtitle">Deploy a team of AI agents as your startup co-workers. Powered by aide.sh.</p>
+    <div class="install-box">
+      <span class="prompt">$</span> <code>aide pull chatfounder/solo-startup && aide up</code>
+    </div>
+  </div>
+
+  <section>
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>Pull the team</h3>
+          <p>One command downloads a company.toml that defines your AI org: CEO, dev, ops -- each with its own persona, skills, and communication channels.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>Boot the company</h3>
+          <p><code>aide up</code> starts the daemon. Agents run on cron, respond to events, and coordinate through shared channels. You are the founder.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Talk to your team</h3>
+          <p><code>aide exec ceo "launch the landing page"</code> -- delegate like a founder. Agents use shell scripts, LLMs, and each other to get work done.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Not another chatbot</h2>
+    <div class="comparison">
+      <div class="compare-col them">
+        <h3>Typical AI agents</h3>
+        <ul>
+          <li>Requires a database and cloud infra</li>
+          <li>Opaque orchestration layer</li>
+          <li>Vendor lock-in to a platform</li>
+          <li>Agents talk to agents forever</li>
+          <li>You pay per token, hope for the best</li>
+        </ul>
+      </div>
+      <div class="compare-col us">
+        <h3>chatfounder (aide.sh)</h3>
+        <ul>
+          <li>No database -- flat files and shell scripts</li>
+          <li>Human founder in the loop</li>
+          <li>Open source, runs on your machine</li>
+          <li>Agents do real work: git, email, cron</li>
+          <li>You own every script they run</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    chatfounder.ai -- powered by <a href="https://aide.sh">aide.sh</a>
+  </footer>
+
+</body>
+</html>

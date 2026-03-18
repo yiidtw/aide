@@ -1,4 +1,5 @@
 mod agents;
+mod company;
 mod config;
 mod daemon;
 mod dashboard;
@@ -118,6 +119,9 @@ enum Command {
         /// Image to push (directory or name)
         #[arg(default_value = ".")]
         image: PathBuf,
+        /// Push to private hub (requires login)
+        #[arg(long)]
+        private: bool,
     },
     /// Pull an agent image from the registry
     Pull {
@@ -198,6 +202,10 @@ enum Command {
     },
     /// Live terminal dashboard (htop for agents)
     Top,
+    /// Show current user info
+    Whoami,
+    /// Show usage cost summary
+    Cost,
     /// Set up MCP integration for Claude Code / Codex
     SetupMcp {
         /// Target: claude (default)
@@ -296,7 +304,13 @@ async fn main() -> Result<()> {
     // Commands that don't require aide.toml
     match &cli.command {
         Command::Build { path, tag: _ } => return cmd_build(path),
-        Command::Push { image } => return cmd_push(image).await,
+        Command::Push { image, private } => {
+            if *private {
+                println!("Private push coming soon. For now, use public push.");
+                return Ok(());
+            }
+            return cmd_push(image).await;
+        }
         Command::Pull { image } => {
             let (agent_ref, version) = parse_image_ref(image);
             return cmd_pull(&agent_ref, &version).await;
@@ -319,6 +333,11 @@ async fn main() -> Result<()> {
             return top::run_top(&config.aide.data_dir);
         }
         Command::SetupMcp { target } => return cmd_setup_mcp(target),
+        Command::Whoami => return cmd_whoami(),
+        Command::Cost => {
+            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+            return cmd_cost(&config.aide.data_dir);
+        }
         _ => {}
     }
 
@@ -455,7 +474,9 @@ async fn main() -> Result<()> {
         | Command::Mcp
         | Command::Dash { .. }
         | Command::Top
-        | Command::SetupMcp { .. } => unreachable!(),
+        | Command::SetupMcp { .. }
+        | Command::Whoami
+        | Command::Cost => unreachable!(),
     }
 
     Ok(())
@@ -1719,7 +1740,7 @@ async fn cmd_pull(agent_ref: &str, version: &str) -> Result<()> {
         Ok(r) => {
             let status = r.status();
             bail!(
-                "pull failed ({})\nAgent not found at: {}\n\nTo install locally instead:\n  git clone <repo> && cp -r agent/ ~/.aide/types/{}/{}/",
+                "pull failed ({})\nAgent not found at: {}\n\nTo install locally instead:\n  git clone <repo> && cp -r agent/ ~/.aide/types/{}/{}/\nFor private agents: aide login first, then aide pull --private",
                 status, url, user, agent_type
             );
         }
@@ -1893,6 +1914,59 @@ async fn cmd_search(query: &str) -> Result<()> {
         }
         Err(e) => {
             bail!("failed to reach registry: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_whoami() -> Result<()> {
+    let auth_path = aide_home().join("auth.json");
+    if !auth_path.exists() {
+        println!("Not logged in. Run: aide login");
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&auth_path)?;
+    let auth: serde_json::Value = serde_json::from_str(&content)?;
+
+    println!("Username: {}", auth["username"].as_str().unwrap_or("?"));
+    println!("Email:    {}", auth["email"].as_str().unwrap_or("?"));
+    println!("Provider: {}", auth["provider"].as_str().unwrap_or("?"));
+    println!("Plan:     free");
+    Ok(())
+}
+
+fn cmd_cost(data_dir: &str) -> Result<()> {
+    let mgr = InstanceManager::new(data_dir);
+    let instances = mgr.list()?;
+
+    if instances.is_empty() {
+        println!("No instances. Nothing to report.");
+        return Ok(());
+    }
+
+    println!("{:<25} {:<10} {:<10} {:<10}", "INSTANCE", "EXECS", "SUCCESS", "FAIL");
+    println!("{}", "\u{2500}".repeat(55));
+
+    for inst in &instances {
+        let logs = mgr.read_logs(&inst.name, 10000).unwrap_or_default();
+        let mut total = 0u32;
+        let mut success = 0u32;
+        let mut fail = 0u32;
+
+        for line in &logs {
+            if line.contains("exec-result:") || line.contains("mcp-exec-result:") || line.contains("cron-result:") {
+                total += 1;
+                if line.contains("\u{2192} ok") || line.contains("-> ok") {
+                    success += 1;
+                } else {
+                    fail += 1;
+                }
+            }
+        }
+
+        if total > 0 {
+            println!("{:<25} {:<10} {:<10} {:<10}", inst.name, total, success, fail);
         }
     }
 

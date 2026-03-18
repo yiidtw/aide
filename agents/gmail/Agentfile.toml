@@ -1,0 +1,45 @@
+[agent]
+name = "gmail"
+version = "0.1.0"
+description = "Gmail assistant — search, read, summarize, draft via debug Chrome"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.inbox]
+script = "skills/inbox.sh"
+description = "Check inbox — latest unread emails"
+usage = "inbox [count]"
+
+[skills.search]
+script = "skills/search.sh"
+description = "Search Gmail"
+usage = "search <query>"
+
+[skills.read]
+script = "skills/read.sh"
+description = "Read a specific email by subject or sender"
+usage = "read <query>"
+
+[skills.unread]
+script = "skills/unread.sh"
+description = "Count and list unread emails"
+usage = "unread"
+
+[skills.summary]
+script = "skills/summary.sh"
+description = "Summarize recent inbox activity"
+usage = "summary"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = []
+
+[limits]
+max_timeout = 60
+max_tokens = 4096
+max_retry = 1

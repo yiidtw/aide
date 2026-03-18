@@ -18,7 +18,7 @@ case "$OS" in
   *) echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 
-VERSION="${AIDE_VERSION:-0.3.1}"
+VERSION="${AIDE_VERSION:-0.4.0}"
 BINARY="aide-${TARGET}"
 URL="https://github.com/yiidtw/aide/releases/download/v${VERSION}/${BINARY}"
 

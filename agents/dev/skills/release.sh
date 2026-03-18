@@ -15,9 +15,9 @@ else
     cargo build --release 2>&1
 fi
 
-BIN="target/release/aide-sh"
+BIN="target/release/aide"
 if [ -n "$TARGET" ]; then
-    BIN="target/$TARGET/release/aide-sh"
+    BIN="target/$TARGET/release/aide"
 fi
 
 if [ -f "$BIN" ]; then

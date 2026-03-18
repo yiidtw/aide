@@ -21,5 +21,5 @@ jobs:
       - name: Smoke test
         run: |
           cargo build --release
-          ./target/release/aide-sh --version
-          ./target/release/aide-sh --help | grep "Docker for AI agents"
+          ./target/release/aide --version
+          ./target/release/aide --help | grep "Docker for AI agents"

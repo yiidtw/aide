@@ -25,7 +25,7 @@ Add the following to your Claude Code `settings.json` or equivalent MCP config:
 {
   "mcpServers": {
     "aide": {
-      "command": "aide-sh",
+      "command": "aide",
       "args": ["mcp-serve"]
     }
   }
@@ -38,7 +38,7 @@ For Cursor, add to `.cursor/mcp.json`:
 {
   "mcpServers": {
     "aide": {
-      "command": "aide-sh",
+      "command": "aide",
       "args": ["mcp-serve"]
     }
   }
@@ -75,7 +75,7 @@ The LLM discovers available skills via `aide_list`, picks the right one, and cal
 ## Running the MCP server manually
 
 ```bash
-$ aide-sh mcp-serve
+$ aide mcp-serve
 MCP server listening on stdio
 ```
 

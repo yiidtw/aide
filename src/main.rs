@@ -20,7 +20,7 @@ use agents::instance::{self, InstanceManager};
 use config::AideConfig;
 
 #[derive(Parser)]
-#[command(name = "aide-sh", about = "Docker for AI agents — aide.sh", version)]
+#[command(name = "aide", about = "Docker for AI agents — aide.sh", version)]
 struct Cli {
     /// Path to aide.toml config file
     #[arg(short, long, default_value = "aide.toml")]
@@ -484,7 +484,7 @@ fn setup_mcp_claude() -> Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let settings_path = PathBuf::from(&home).join(".claude").join("settings.json");
 
-    // Find aide-sh binary path
+    // Find aide binary path
     let exe_path = find_aide_binary();
 
     // Read or create settings
@@ -531,7 +531,7 @@ fn find_aide_binary() -> String {
         return exe.to_string_lossy().to_string();
     }
     // Fallback
-    "aide-sh".to_string()
+    "aide".to_string()
 }
 
 // ─── Command implementations ───
@@ -1820,7 +1820,7 @@ async fn cmd_login() -> Result<()> {
             let user_resp = client
                 .get("https://api.github.com/user")
                 .header("Authorization", format!("Bearer {}", access_token))
-                .header("User-Agent", "aide-sh")
+                .header("User-Agent", "aide")
                 .send().await?.json::<serde_json::Value>().await?;
 
             let username = user_resp["login"].as_str().unwrap_or("unknown").to_string();

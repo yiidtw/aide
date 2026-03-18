@@ -1,0 +1,58 @@
+[agent]
+name = "teaching-monster"
+version = "0.1.0"
+description = "Competition operator for teaching.monster — login, generate, evaluate, check scores"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.serve]
+script = "skills/serve.sh"
+description = "Start (or restart) the storylens API on formace-00"
+usage = "serve [--restart]"
+
+[skills.stop]
+script = "skills/stop.sh"
+description = "Stop the storylens API on formace-00"
+usage = "stop"
+
+[skills.login]
+script = "skills/login.sh"
+description = "Open browser and log into teaching.monster competition platform"
+usage = "login"
+
+[skills.status]
+script = "skills/status.sh"
+description = "Show all topics with generation status, eval status, and scores"
+usage = "status"
+
+[skills.generate]
+script = "skills/generate.sh"
+description = "Trigger video generation for a topic (by ID or 'all' for batch)"
+usage = "generate [TOPIC_ID|all]"
+
+[skills.evaluate]
+script = "skills/evaluate.sh"
+description = "Trigger AI evaluation on completed topics"
+usage = "evaluate [TOPIC_ID|all]"
+
+[skills.score]
+script = "skills/score.sh"
+description = "Fetch detailed scores and analysis for evaluated topics"
+usage = "score [TOPIC_ID]"
+
+[skills.logs]
+script = "skills/logs.sh"
+description = "Tail the storylens API logs on formace-00"
+usage = "logs [--lines N]"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = ["STORYLENS_API_URL"]
+optional = ["STORYLENS_ADMIN_TOKEN", "FORMACE_HOST"]
+
+[soul]
+prefer = "claude-sonnet-4-6"

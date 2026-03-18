@@ -1,12 +1,12 @@
 [package]
-name = "aide-sh"
+name = "aide"
 version = "0.3.1"
 edition = "2021"
 description = "aide.sh — Docker for AI agents"
 license = "MIT"
 
 [[bin]]
-name = "aide-sh"
+name = "aide"
 path = "src/main.rs"
 
 [dependencies]

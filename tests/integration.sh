@@ -4,7 +4,7 @@
 # Run: ./tests/integration.sh
 set -euo pipefail
 
-AIDE="./target/release/aide-sh"
+AIDE="./target/release/aide"
 REGISTRY="${AIDE_REGISTRY_URL:-https://registry.aide.sh}"
 # Fallback if DNS hasn't propagated locally
 if ! curl -sf --max-time 3 "$REGISTRY/v1/search?q=_ping" > /dev/null 2>&1; then

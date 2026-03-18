@@ -1,0 +1,35 @@
+[agent]
+name = "code-review"
+version = "0.1.0"
+description = "Code review agent — plan, review, QA, ship (based on gstack by Garry Tan)"
+author = "aide"
+
+[persona]
+file = "persona.md"
+
+[skills.plan]
+script = "skills/plan.sh"
+description = "CEO-level product review — rethink for the 10-star product"
+usage = "plan [path]"
+
+[skills.review]
+script = "skills/review.sh"
+description = "Staff engineer code review — find production-breaking bugs"
+usage = "review [branch|path]"
+
+[skills.qa]
+script = "skills/qa.sh"
+description = "QA testing — run tests, find bugs, verify fixes"
+usage = "qa [diff|full|quick]"
+
+[skills.ship]
+script = "skills/ship.sh"
+description = "Release engineer — sync, test, push, open PR"
+usage = "ship [branch]"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = ["GITHUB_TOKEN"]

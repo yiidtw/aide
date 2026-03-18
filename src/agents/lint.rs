@@ -32,7 +32,7 @@ pub struct LintResult {
     pub warnings: Vec<String>,
 }
 
-/// Lint an agent directory, performing 16 checks.
+/// Lint an agent directory, performing 17 checks.
 ///
 /// The checks are:
 ///

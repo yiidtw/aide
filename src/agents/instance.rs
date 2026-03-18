@@ -286,7 +286,7 @@ impl InstanceManager {
     pub fn cron_add(&self, name: &str, schedule: &str, skill: &str) -> Result<()> {
         let mut manifest = self
             .load_manifest(name)
-            .context(format!("instance '{}' not found", name))?;
+            .with_context(|| format!("instance '{}' not found", name))?;
 
         // Check for duplicate
         if manifest.cron.iter().any(|c| c.skill == skill) {
@@ -310,7 +310,7 @@ impl InstanceManager {
     pub fn cron_rm(&self, name: &str, skill: &str) -> Result<bool> {
         let mut manifest = self
             .load_manifest(name)
-            .context(format!("instance '{}' not found", name))?;
+            .with_context(|| format!("instance '{}' not found", name))?;
 
         let before = manifest.cron.len();
         manifest.cron.retain(|c| c.skill != skill);
@@ -334,13 +334,13 @@ impl InstanceManager {
     pub fn cron_update_last_run(&self, name: &str, skill: &str) -> Result<()> {
         let mut manifest = self
             .load_manifest(name)
-            .context(format!("instance '{}' not found", name))?;
+            .with_context(|| format!("instance '{}' not found", name))?;
 
         let entry = manifest
             .cron
             .iter_mut()
             .find(|c| c.skill == skill)
-            .context(format!("no cron entry for skill '{}'", skill))?;
+            .with_context(|| format!("no cron entry for skill '{}'", skill))?;
 
         entry.last_run = Some(Utc::now());
         self.save_manifest(name, &manifest)?;
@@ -354,7 +354,7 @@ impl InstanceManager {
     pub fn cron_list(&self, name: &str) -> Result<Vec<CronEntry>> {
         let manifest = self
             .load_manifest(name)
-            .context(format!("instance '{}' not found", name))?;
+            .with_context(|| format!("instance '{}' not found", name))?;
         Ok(manifest.cron)
     }
 
@@ -469,9 +469,9 @@ impl InstanceManager {
     fn load_manifest(&self, name: &str) -> Result<InstanceManifest> {
         let path = self.base_dir.join(name).join("instance.toml");
         let content =
-            fs::read_to_string(&path).context(format!("failed to read {}", path.display()))?;
+            fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
         let manifest: InstanceManifest =
-            toml::from_str(&content).context(format!("failed to parse {}", path.display()))?;
+            toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
         Ok(manifest)
     }
 

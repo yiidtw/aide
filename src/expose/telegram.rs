@@ -163,7 +163,7 @@ pub async fn run_telegram_bot(data_dir: &str, instance: &str, token: &str) -> Re
 
                 let reply = match try_claude_prompt(instance, &text, &inst_dir) {
                     Some(output) => {
-                        let _ = mgr.append_log(instance, &format!("telegram-prompt-result: ok"));
+                        let _ = mgr.append_log(instance, "telegram-prompt-result: ok");
                         output
                     }
                     None => {
@@ -332,7 +332,7 @@ fn exec_skill_raw(
 
 /// Execute a skill script, returning (exit_code, stdout, stderr).
 fn exec_skill(
-    inst_dir: &PathBuf,
+    inst_dir: &Path,
     skill_name: &str,
     args: &str,
     data_dir: &str,
@@ -375,7 +375,7 @@ fn exec_skill(
 }
 
 /// Format a welcome message listing available skills.
-fn format_welcome(instance: &str, inst_dir: &PathBuf) -> String {
+fn format_welcome(instance: &str, inst_dir: &Path) -> String {
     let mut msg = format!("Welcome to {} agent!\n\n", instance);
 
     if let Ok(spec) = AgentfileSpec::load(inst_dir) {
@@ -403,7 +403,7 @@ fn format_welcome(instance: &str, inst_dir: &PathBuf) -> String {
 }
 
 /// Format a "skill not found" reply with the list of available skills.
-fn format_skill_not_found(_instance: &str, skill_name: &str, inst_dir: &PathBuf) -> String {
+fn format_skill_not_found(_instance: &str, skill_name: &str, inst_dir: &Path) -> String {
     let mut msg = format!("Unknown skill: {}\n\n", skill_name);
 
     if let Ok(spec) = AgentfileSpec::load(inst_dir) {

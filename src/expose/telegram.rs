@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
 use crate::agents::agentfile::AgentfileSpec;
@@ -157,7 +157,19 @@ pub async fn run_telegram_bot(data_dir: &str, instance: &str, token: &str) -> Re
                 .join(format!("{}.sh", skill_name));
 
             if !script.exists() {
-                let reply = format_skill_not_found(instance, skill_name, &inst_dir);
+                // Skill not found — try claude -p for natural language
+                info!(instance = %instance, text = %text, "no matching skill, trying claude -p");
+                let _ = mgr.append_log(instance, &format!("telegram-prompt: {}", text));
+
+                let reply = match try_claude_prompt(instance, &text, &inst_dir) {
+                    Some(output) => {
+                        let _ = mgr.append_log(instance, &format!("telegram-prompt-result: ok"));
+                        output
+                    }
+                    None => {
+                        format_skill_not_found(instance, skill_name, &inst_dir)
+                    }
+                };
                 if let Err(e) = tg_send(&client, token, chat_id, &reply).await {
                     error!(error = %e, "telegram send failed");
                 }
@@ -233,6 +245,89 @@ pub fn spawn_telegram_bot(data_dir: String, instance: String, token: String) {
             );
         }
     });
+}
+
+/// Try to use claude -p to interpret natural language and run matching skills.
+fn try_claude_prompt(instance: &str, query: &str, inst_dir: &Path) -> Option<String> {
+    // Read persona
+    let persona = std::fs::read_to_string(inst_dir.join("persona.md")).unwrap_or_default();
+
+    // Read skill catalog
+    let skill_info = AgentfileSpec::load(inst_dir)
+        .ok()
+        .map(|spec| spec.format_help(instance))
+        .unwrap_or_default();
+
+    let prompt = format!(
+        "You are an agent assistant. Given the persona and skills below, \
+         answer the user's query by deciding which skill to call.\n\
+         Respond with EXEC: <skill_name> [args] or answer directly if no skill matches.\n\n\
+         ## Persona\n{}\n\n## Skills\n{}\n\n## Query\n{}",
+        persona, skill_info, query
+    );
+
+    // Try claude -p
+    let output = std::process::Command::new("claude")
+        .arg("-p")
+        .arg(&prompt)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let response = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Check for EXEC: lines and run them
+    for line in response.lines() {
+        let line = line.trim();
+        if let Some(cmd) = line.strip_prefix("EXEC:") {
+            let cmd = cmd.trim();
+            let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+            let skill_name = parts[0];
+            let args = if parts.len() > 1 { parts[1] } else { "" };
+
+            let script = inst_dir.join("skills").join(format!("{}.sh", skill_name));
+            if script.exists() {
+                // Load vault env
+                let env = load_vault_env().unwrap_or_default();
+                match exec_skill_raw(&script, args, inst_dir, &env) {
+                    Ok((_, stdout, _)) => return Some(stdout),
+                    Err(e) => return Some(format!("Error running {}: {}", skill_name, e)),
+                }
+            }
+        }
+    }
+
+    // No EXEC: found — return raw claude response
+    Some(response)
+}
+
+fn exec_skill_raw(
+    script: &Path,
+    args: &str,
+    working_dir: &Path,
+    env: &[(String, String)],
+) -> Result<(i32, String, String)> {
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(script);
+    if !args.is_empty() {
+        for arg in args.split_whitespace() {
+            cmd.arg(arg);
+        }
+    }
+    cmd.current_dir(working_dir);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let output = cmd.output()
+        .with_context(|| format!("failed to execute: {}", script.display()))?;
+    Ok((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    ))
 }
 
 /// Execute a skill script, returning (exit_code, stdout, stderr).

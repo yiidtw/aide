@@ -1,0 +1,40 @@
+[agent]
+name = "twitter"
+version = "0.1.0"
+description = "Twitter/X agent — post, draft, engage via debug Chrome"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.tweet]
+script = "skills/tweet.sh"
+description = "Post a tweet via debug Chrome"
+usage = "tweet <text>"
+
+[skills.draft]
+script = "skills/draft.sh"
+description = "Save a draft tweet for later"
+usage = "draft <text>"
+
+[skills.drafts]
+script = "skills/drafts.sh"
+description = "List saved drafts"
+usage = "drafts"
+
+[skills.engage]
+script = "skills/engage.sh"
+description = "Check notifications and recent mentions"
+usage = "engage"
+
+[seed]
+dir = "seed/"
+
+[env]
+required = []
+optional = []
+
+[limits]
+max_timeout = 60
+max_tokens = 4096
+max_retry = 1

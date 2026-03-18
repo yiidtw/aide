@@ -212,6 +212,17 @@ enum Command {
         #[arg(default_value = "claude")]
         target: String,
     },
+    /// Deploy an agent to GitHub with issue-driven workflow
+    Deploy {
+        /// Instance name
+        instance: String,
+        /// Create GitHub repo and push
+        #[arg(long)]
+        github: bool,
+        /// Make the repo private
+        #[arg(long)]
+        private: bool,
+    },
     // ─── Hidden aliases for backward compat ───
 
     /// Alias for 'run'
@@ -333,6 +344,14 @@ async fn main() -> Result<()> {
             return top::run_top(&config.aide.data_dir);
         }
         Command::SetupMcp { target } => return cmd_setup_mcp(target),
+        Command::Deploy { instance, github, private } => {
+            if *github {
+                let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+                return cmd_deploy_github(&config.aide.data_dir, instance, *private);
+            } else {
+                bail!("specify --github to deploy to GitHub");
+            }
+        }
         Command::Whoami => return cmd_whoami(),
         Command::Cost => {
             let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
@@ -475,6 +494,7 @@ async fn main() -> Result<()> {
         | Command::Dash { .. }
         | Command::Top
         | Command::SetupMcp { .. }
+        | Command::Deploy { .. }
         | Command::Whoami
         | Command::Cost => unreachable!(),
     }
@@ -1983,6 +2003,168 @@ fn urlencoded(s: &str) -> String {
             _ => format!("%{:02X}", b),
         })
         .collect()
+}
+
+fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()> {
+    let mgr = InstanceManager::new(data_dir);
+    let _manifest = mgr.get(instance)?
+        .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
+
+    let inst_dir = mgr.base_dir().join(instance);
+
+    // Read auth for username
+    let auth_path = aide_home().join("auth.json");
+    let username = if let Ok(content) = std::fs::read_to_string(&auth_path) {
+        serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|v| v["username"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "user".to_string())
+    } else {
+        bail!("Not logged in. Run: aide login");
+    };
+
+    // Derive repo name from instance: school.ydwu → school-agent
+    let agent_name = instance.split('.').next().unwrap_or(instance);
+    let repo_name = format!("{}-agent", agent_name);
+    let visibility = if private { "--private" } else { "--public" };
+
+    println!("deploying {} → github.com/{}/{}", instance, username, repo_name);
+
+    // 1. Create repo
+    let create_output = std::process::Command::new("gh")
+        .args(["repo", "create", &format!("{}/{}", username, repo_name), visibility, "--confirm"])
+        .output()?;
+
+    if !create_output.status.success() {
+        let stderr = String::from_utf8_lossy(&create_output.stderr);
+        if !stderr.contains("already exists") {
+            bail!("failed to create repo: {}", stderr);
+        }
+        println!("  repo already exists, updating...");
+    }
+
+    // 2. Init git in a temp dir, copy agent files, push
+    let tmp_dir = std::env::temp_dir().join(format!("aide-deploy-{}", agent_name));
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)?;
+    }
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    // Copy agent files
+    copy_dir_recursive(&inst_dir, &tmp_dir)?;
+
+    // Create .github/workflows/agent.yml
+    let workflow_dir = tmp_dir.join(".github").join("workflows");
+    std::fs::create_dir_all(&workflow_dir)?;
+
+    let workflow_template = r#"name: Agent
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: agent-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       contains(fromJSON('["USERNAME_PLACEHOLDER"]'), github.event.comment.user.login)) ||
+      (github.event_name == 'issues' &&
+       contains(fromJSON('["USERNAME_PLACEHOLDER"]'), github.event.issue.user.login))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install aide
+        run: |
+          VERSION="0.4.0"
+          ARCH=$(uname -m)
+          mkdir -p "$HOME/.local/bin"
+          curl -sL -o "$HOME/.local/bin/aide" \
+            "https://github.com/yiidtw/aide/releases/download/v${VERSION}/aide-${ARCH}-unknown-linux-gnu"
+          chmod +x "$HOME/.local/bin/aide"
+
+      - name: Run agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            BODY="${{ github.event.comment.body }}"
+          else
+            BODY="${{ github.event.issue.body }}"
+          fi
+          ISSUE="${{ github.event.issue.number }}"
+          RESULT=$(aide exec -p AGENT_PLACEHOLDER "$BODY" 2>&1 || echo "Agent error")
+          gh issue comment "$ISSUE" --body "$RESULT"
+
+      - name: Commit memory
+        run: |
+          git config user.name "agent[bot]"
+          git config user.email "agent@aide.sh"
+          git pull --rebase || true
+          git add memory/ || true
+          git diff --cached --quiet || git commit -m "memory: issue #${{ github.event.issue.number }}"
+          git push || true
+"#;
+
+    let workflow = workflow_template
+        .replace("USERNAME_PLACEHOLDER", &username)
+        .replace("AGENT_PLACEHOLDER", agent_name);
+
+    std::fs::write(workflow_dir.join("agent.yml"), workflow)?;
+
+    // Create memory/ dir
+    std::fs::create_dir_all(tmp_dir.join("memory"))?;
+    std::fs::write(tmp_dir.join("memory/.gitkeep"), "")?;
+
+    // Create README
+    let readme = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
+        format!("# {}\n\n{}\n\nPowered by [aide.sh](https://aide.sh)\n",
+            agent_name,
+            spec.agent.description.as_deref().unwrap_or("An aide.sh agent"))
+    } else {
+        format!("# {}\n\nAn aide.sh agent.\n", agent_name)
+    };
+    std::fs::write(tmp_dir.join("README.md"), readme)?;
+
+    // Git init + push
+    let git = |args: &[&str]| -> Result<()> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&tmp_dir)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("already exists") && !stderr.contains("nothing to commit") {
+                tracing::warn!("git {:?}: {}", args, stderr);
+            }
+        }
+        Ok(())
+    };
+
+    git(&["init"])?;
+    git(&["add", "-A"])?;
+    git(&["commit", "-m", &format!("deploy {} agent", agent_name)])?;
+    git(&["branch", "-M", "main"])?;
+    git(&["remote", "add", "origin", &format!("https://github.com/{}/{}.git", username, repo_name)])?;
+    git(&["push", "-u", "origin", "main", "--force"])?;
+
+    // Cleanup
+    std::fs::remove_dir_all(&tmp_dir)?;
+
+    println!("  repo: https://github.com/{}/{}", username, repo_name);
+    println!("  workflow: issue-driven agent");
+    println!();
+    println!("talk to your agent:");
+    println!("  open an issue at https://github.com/{}/{}/issues/new", username, repo_name);
+
+    Ok(())
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {

@@ -2,6 +2,9 @@ export interface Env {
   RESEND_API_KEY: string;
   ADMIN_EMAIL: string;
   INBOX: KVNamespace;
+  GITHUB_TOKEN?: string;
+  // Map agent names to GitHub repos: "jenny=yiidtw/jenny-agent,infra=yiidtw/infra-agent"
+  AGENT_REPOS?: string;
 }
 
 export default {
@@ -43,6 +46,9 @@ export default {
     await env.INBOX.put(inboxKey, JSON.stringify(messages), { expirationTtl: 86400 });
 
     console.log(`Email received: agent=${agentName} user=${username} from=${from} subject=${subject}`);
+
+    // Create GitHub issue on agent's repo (if configured)
+    await createGitHubIssue(env, agentName, from, subject, body);
 
     await sendReply(env.RESEND_API_KEY, from, agentName, username, subject, body);
     await message.forward(env.ADMIN_EMAIL);
@@ -114,6 +120,54 @@ function extractTextBody(rawEmail: string): string {
     if (inText && !line.toLowerCase().startsWith("content-")) { textLines.push(line); }
   }
   return textLines.join("\n").trim().substring(0, 2000);
+}
+
+function parseAgentRepos(envVal: string | undefined): Record<string, string> {
+  if (!envVal) return {};
+  const map: Record<string, string> = {};
+  for (const pair of envVal.split(",")) {
+    const [agent, repo] = pair.trim().split("=");
+    if (agent && repo) map[agent.trim()] = repo.trim();
+  }
+  return map;
+}
+
+async function createGitHubIssue(
+  env: Env, agentName: string, from: string, subject: string, body: string,
+): Promise<void> {
+  if (!env.GITHUB_TOKEN || !env.AGENT_REPOS) return;
+
+  const repos = parseAgentRepos(env.AGENT_REPOS);
+  const repo = repos[agentName];
+  if (!repo) {
+    console.log(`No GitHub repo configured for agent: ${agentName}`);
+    return;
+  }
+
+  try {
+    const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        "Content-Type": "application/json",
+        "User-Agent": "aide-email-gateway",
+      },
+      body: JSON.stringify({
+        title: `[email] ${subject}`,
+        body: `**From:** ${from}\n**Subject:** ${subject}\n\n---\n\n${body}\n\n---\n*Received via aide.sh email gateway*`,
+        labels: ["email", "inbox"],
+      }),
+    });
+
+    if (resp.ok) {
+      const issue = await resp.json() as { number: number; html_url: string };
+      console.log(`GitHub issue created: ${repo}#${issue.number}`);
+    } else {
+      console.error(`GitHub issue creation failed: ${resp.status} ${await resp.text()}`);
+    }
+  } catch (e) {
+    console.error("Failed to create GitHub issue:", e);
+  }
 }
 
 async function sendReply(

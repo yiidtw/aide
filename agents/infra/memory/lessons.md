@@ -5,6 +5,10 @@
 - USE Cloudflare Access for server-side auth. One policy locks any CF Pages site.
 - CF Access handles Google/GitHub login without redirect URL configuration.
 - The old research-deploy/research-firebase skills inject a `<div>` overlay — client-side only.
+- Zero Trust team name: yiidtw (yiidtw.cloudflareaccess.com)
+- Zero Trust plan: Free (50 users)
+- aide-admin token has Access: Apps+Policies, Orgs+IdP+Groups, Service Tokens (Edit)
+- Use `lock.sh` to create Access app + policy, `service-token.sh` for machine access.
 
 ## DNS
 - Always delete old A records before adding CNAME (CF won't allow both).

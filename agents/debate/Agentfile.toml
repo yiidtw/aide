@@ -1,0 +1,26 @@
+[agent]
+name = "debate"
+version = "0.1.0"
+description = "Three Sages debate agent — Heyting argumentation with pluggable termination"
+author = "ydwu"
+
+[persona]
+file = "persona.md"
+
+[skills.meet]
+script = "skills/meet.sh"
+description = "Run a three-sages debate on a topic"
+usage = "meet <topic> [--mode claude|triad] [--rounds N] [--budget N] [--termination plain|heyting]"
+
+[skills.status]
+script = "skills/status.sh"
+description = "Show last debate results and labelling history"
+usage = "status"
+
+[seed]
+dir = "seed/"
+
+[limits]
+max_timeout = 300
+max_tokens = 32768
+max_retry = 1

@@ -21,8 +21,26 @@ env = ["CLOUDFLARE_API_TOKEN"]
 
 [skills.lock]
 script = "skills/lock.sh"
-description = "Lock a site with CF Access auth"
-usage = "lock <domain>"
+description = "Lock a domain with CF Access (app + policy + Google login)"
+usage = "lock <domain> [email]"
+env = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+[skills.unlock]
+script = "skills/unlock.sh"
+description = "Remove CF Access lock from a domain"
+usage = "unlock <domain>"
+env = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+[skills.service-token]
+script = "skills/service-token.sh"
+description = "Create a CF Access service token for machine access"
+usage = "service-token <name>"
+env = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+[skills.access-status]
+script = "skills/access-status.sh"
+description = "List all CF Access apps and service tokens"
+usage = "access-status"
 env = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
 
 [skills.sites]

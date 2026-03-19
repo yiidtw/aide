@@ -43,8 +43,11 @@ pub async fn sync_vault(config: &AideConfig) -> Result<()> {
         })
         .collect();
 
-    let vault = Vault::new(vault_path.to_path_buf(), targets);
-    vault.sync_to_targets().await?;
+    let vault = Vault::from_config(
+        &vault_path.to_string_lossy(),
+        None,
+    );
+    vault.git_commit_push("vault sync").await?;
 
     info!("vault sync complete");
     Ok(())

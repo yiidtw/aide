@@ -1,33 +1,53 @@
-// Vault: encrypted credential storage + cross-machine sync
-// MVP: age encryption via CLI + scp push on change
+// Vault v2: multi-recipient age encryption + git-based sync
+//
+// Storage:
+//   vault.age      — encrypted, in aide-vault git repo (private)
+//   vault.key      — per-machine private key, ~/.aide/vault.key, never in git
+//   recipients.txt — all machines' public keys, in vault repo
+//
+// Sync:
+//   Each machine edits on its own branch, merges to main.
+//   `aide vault sync` = git commit + push own branch, then merge to main.
+//   Remote: `git pull main` to get latest.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing::{info, warn};
 
-/// Vault manages encrypted credentials via age CLI.
-/// Plaintext env vars → age-encrypted vault file → scp to targets.
 pub struct Vault {
-    /// Path to the encrypted vault file (e.g., ~/.aide/vault.age)
-    vault_path: PathBuf,
-    /// Path to the age identity (private key) file
+    /// Path to the vault repo directory (e.g., ~/claude_projects/aide-vault)
+    repo_dir: PathBuf,
+    /// Path to the age identity (private key) file (~/.aide/vault.key)
     identity_path: PathBuf,
-    /// Sync targets (machine hostnames from aide.toml)
-    targets: Vec<String>,
 }
 
 impl Vault {
-    pub fn new(vault_path: PathBuf, targets: Vec<String>) -> Self {
-        let identity_path = vault_path
-            .parent()
-            .unwrap_or(Path::new("~/.aide"))
-            .join("vault.key");
+    pub fn new(repo_dir: PathBuf, identity_path: PathBuf) -> Self {
         Self {
-            vault_path,
+            repo_dir,
             identity_path,
-            targets,
         }
+    }
+
+    /// Construct from config paths with tilde expansion
+    pub fn from_config(repo_dir: &str, identity_path: Option<&str>) -> Self {
+        let repo = PathBuf::from(shellexpand::tilde(repo_dir).to_string());
+        let key = identity_path
+            .map(|p| PathBuf::from(shellexpand::tilde(p).to_string()))
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".aide").join("vault.key")
+            });
+        Self::new(repo, key)
+    }
+
+    fn vault_age_path(&self) -> PathBuf {
+        self.repo_dir.join("vault.age")
+    }
+
+    fn recipients_path(&self) -> PathBuf {
+        self.repo_dir.join("recipients.txt")
     }
 
     /// Get the identity (private key) file path
@@ -40,6 +60,11 @@ impl Vault {
         if self.identity_path.exists() {
             info!(path = %self.identity_path.display(), "vault identity exists");
             return Ok(());
+        }
+
+        // Ensure parent dir exists
+        if let Some(parent) = self.identity_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
         }
 
         info!("generating new age identity for vault");
@@ -62,7 +87,7 @@ impl Vault {
     }
 
     /// Get the public key (recipient) from the identity file
-    async fn recipient(&self) -> Result<String> {
+    pub async fn recipient(&self) -> Result<String> {
         let output = Command::new("age-keygen")
             .arg("-y")
             .arg(&self.identity_path)
@@ -80,15 +105,20 @@ impl Vault {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
-    /// Encrypt plaintext data into the vault file
+    /// Encrypt plaintext data into vault.age using recipients.txt
     pub async fn encrypt(&self, plaintext: &[u8]) -> Result<()> {
-        let recipient = self.recipient().await?;
+        let recipients = self.recipients_path();
+        if !recipients.exists() {
+            // Fallback: single-recipient with own key
+            warn!("recipients.txt not found, using single-recipient mode");
+            return self.encrypt_single(plaintext).await;
+        }
 
         let mut child = Command::new("age")
-            .arg("-r")
-            .arg(&recipient)
+            .arg("-R")
+            .arg(&recipients)
             .arg("-o")
-            .arg(&self.vault_path)
+            .arg(&self.vault_age_path())
             .stdin(std::process::Stdio::piped())
             .spawn()
             .context("failed to spawn age")?;
@@ -103,21 +133,48 @@ impl Vault {
             bail!("age encrypt failed");
         }
 
-        info!(path = %self.vault_path.display(), "vault encrypted");
+        info!(path = %self.vault_age_path().display(), "vault encrypted (multi-recipient)");
+        Ok(())
+    }
+
+    /// Fallback: encrypt with single recipient (own key)
+    async fn encrypt_single(&self, plaintext: &[u8]) -> Result<()> {
+        let recipient = self.recipient().await?;
+
+        let mut child = Command::new("age")
+            .arg("-r")
+            .arg(&recipient)
+            .arg("-o")
+            .arg(&self.vault_age_path())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .context("failed to spawn age")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(plaintext).await?;
+        }
+
+        let status = child.wait().await?;
+        if !status.success() {
+            bail!("age encrypt failed");
+        }
+
         Ok(())
     }
 
     /// Decrypt the vault file into plaintext
     pub async fn decrypt(&self) -> Result<Vec<u8>> {
-        if !self.vault_path.exists() {
-            bail!("vault file not found: {}", self.vault_path.display());
+        let vault_path = self.vault_age_path();
+        if !vault_path.exists() {
+            bail!("vault file not found: {}", vault_path.display());
         }
 
         let output = Command::new("age")
             .arg("-d")
             .arg("-i")
             .arg(&self.identity_path)
-            .arg(&self.vault_path)
+            .arg(&vault_path)
             .output()
             .await
             .context("failed to run age -d")?;
@@ -132,60 +189,82 @@ impl Vault {
         Ok(output.stdout)
     }
 
-    /// Sync vault file + identity to all targets via scp
-    pub async fn sync_to_targets(&self) -> Result<()> {
-        if !self.vault_path.exists() {
-            bail!("vault file not found, encrypt first");
+    /// Git commit + push on current branch
+    pub async fn git_commit_push(&self, message: &str) -> Result<()> {
+        let repo = &self.repo_dir;
+
+        // git add vault.age
+        let status = Command::new("git")
+            .args(["-C", repo.to_str().unwrap_or("."), "add", "vault.age"])
+            .status()
+            .await?;
+        if !status.success() {
+            bail!("git add failed");
         }
 
-        for target in &self.targets {
-            info!(target = %target, "syncing vault");
+        // Check if there are changes to commit
+        let diff = Command::new("git")
+            .args(["-C", repo.to_str().unwrap_or("."), "diff", "--cached", "--quiet"])
+            .status()
+            .await?;
 
-            // Use ~/.aide on remote (tilde-relative, not absolute)
-            let status = Command::new("ssh")
-                .args([target.as_str(), "mkdir -p ~/.aide"])
-                .status()
-                .await?;
-
-            if !status.success() {
-                warn!(target = %target, "failed to create remote dir");
-                continue;
-            }
-
-            // scp vault file to remote ~/.aide/
-            let vault_name = self.vault_path.file_name().unwrap_or_default().to_str().unwrap_or("vault.age");
-            let remote = format!("{}:~/.aide/{}", target, vault_name);
-            let status = Command::new("scp")
-                .args([
-                    self.vault_path.to_str().unwrap_or(""),
-                    &remote,
-                ])
-                .status()
-                .await?;
-
-            if !status.success() {
-                warn!(target = %target, "failed to sync vault file");
-                continue;
-            }
-
-            // scp identity file to remote ~/.aide/
-            let key_name = self.identity_path.file_name().unwrap_or_default().to_str().unwrap_or("vault.key");
-            let remote_key = format!("{}:~/.aide/{}", target, key_name);
-            let status = Command::new("scp")
-                .args([
-                    self.identity_path.to_str().unwrap_or(""),
-                    &remote_key,
-                ])
-                .status()
-                .await?;
-
-            if status.success() {
-                info!(target = %target, "vault synced");
-            } else {
-                warn!(target = %target, "failed to sync vault identity");
-            }
+        if diff.success() {
+            info!("no changes to commit");
+            return Ok(());
         }
 
+        // git commit
+        let status = Command::new("git")
+            .args(["-C", repo.to_str().unwrap_or("."), "commit", "-m", message])
+            .status()
+            .await?;
+        if !status.success() {
+            bail!("git commit failed");
+        }
+
+        // git push
+        let status = Command::new("git")
+            .args(["-C", repo.to_str().unwrap_or("."), "push"])
+            .status()
+            .await?;
+        if !status.success() {
+            warn!("git push failed — commit is local only");
+        }
+
+        Ok(())
+    }
+
+    /// Sync: pull main, merge own branch changes
+    pub async fn sync(&self) -> Result<()> {
+        let repo = self.repo_dir.to_str().unwrap_or(".");
+
+        // Fetch
+        let status = Command::new("git")
+            .args(["-C", repo, "fetch", "origin"])
+            .status()
+            .await?;
+        if !status.success() {
+            bail!("git fetch failed");
+        }
+
+        // Pull main
+        let status = Command::new("git")
+            .args(["-C", repo, "checkout", "main"])
+            .status()
+            .await?;
+        if !status.success() {
+            bail!("git checkout main failed");
+        }
+
+        let status = Command::new("git")
+            .args(["-C", repo, "pull", "origin", "main"])
+            .status()
+            .await?;
+        if !status.success() {
+            warn!("git pull main had issues — check for conflicts");
+        }
+
+        info!("vault synced from main");
         Ok(())
     }
 
@@ -200,14 +279,13 @@ impl Vault {
 
         info!(
             source = %env_path.display(),
-            vault = %self.vault_path.display(),
+            vault = %self.vault_age_path().display(),
             "imported env into vault"
         );
         Ok(())
     }
 
     /// Export vault back to plaintext (for reading secrets)
-    #[allow(dead_code)]
     pub async fn get_env(&self) -> Result<std::collections::HashMap<String, String>> {
         let data = self.decrypt().await?;
         let text = String::from_utf8(data)?;
@@ -218,7 +296,6 @@ impl Vault {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            // Handle export KEY=VALUE or KEY=VALUE
             let line = line.strip_prefix("export ").unwrap_or(line);
             if let Some((key, value)) = line.split_once('=') {
                 let value = value.trim_matches('\'').trim_matches('"');
@@ -227,5 +304,26 @@ impl Vault {
         }
 
         Ok(env)
+    }
+
+    /// List all key names in the vault (no values)
+    pub async fn list_keys(&self) -> Result<Vec<String>> {
+        let data = self.decrypt().await?;
+        let text = String::from_utf8(data)?;
+        let mut keys = Vec::new();
+
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            if let Some((key, _)) = line.split_once('=') {
+                keys.push(key.to_string());
+            }
+        }
+
+        keys.sort();
+        Ok(keys)
     }
 }

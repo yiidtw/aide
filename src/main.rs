@@ -442,34 +442,47 @@ async fn main() -> Result<()> {
             cmd_unmount(&mgr, &instance, &target)?;
         }
         Command::Vault { action } => {
-            let vault_path = config
+            let vault_repo = config
                 .aide
-                .vault_path
+                .vault_repo
                 .as_ref()
                 .map(|p| shellexpand::tilde(p).to_string())
-                .unwrap_or_else(|| "~/.aide/vault.age".to_string());
-            let targets = config
-                .sync
-                .vault
-                .as_ref()
-                .map(|v| v.targets.clone())
-                .unwrap_or_default();
-            let v = vault::Vault::new(PathBuf::from(&vault_path), targets);
+                .unwrap_or_else(|| {
+                    // Fallback: legacy vault_path location or default
+                    config
+                        .aide
+                        .vault_path
+                        .as_ref()
+                        .map(|p| shellexpand::tilde(p).to_string())
+                        .map(|p| {
+                            // If vault_path points to a file, use its parent dir
+                            let path = PathBuf::from(&p);
+                            path.parent()
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| {
+                            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                            format!("{}/claude_projects/aide-vault", home)
+                        })
+                });
+            let v = vault::Vault::from_config(&vault_repo, None);
 
             match action {
                 VaultAction::Import { path } => {
                     v.import_env(&path).await?;
                     fix_vault_key_permissions(&v.identity_path());
-                    println!("imported {} → {}", path.display(), vault_path);
+                    println!("imported {} → vault", path.display());
                 }
                 VaultAction::Set { pairs } => {
                     cmd_vault_set(&v, &pairs).await?;
                 }
                 VaultAction::Rotate => {
-                    cmd_vault_rotate(&v, &vault_path).await?;
+                    cmd_vault_rotate(&v).await?;
                 }
                 VaultAction::Status => {
-                    cmd_vault_status(&vault_path, &v);
+                    cmd_vault_status(&v).await;
                 }
                 VaultAction::SetToken { username, token } => {
                     cmd_vault_set_token(&v, &username, &token).await?;
@@ -1275,7 +1288,11 @@ fn return_empty_spec() -> AgentfileSpec {
 }
 
 fn load_vault_env() -> Result<Vec<(String, String)>> {
-    let vault_path = aide_home().join("vault.age");
+    // Try vault repo first, then legacy ~/.aide/vault.age
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let vault_repo_path = PathBuf::from(&home).join("claude_projects/aide-vault/vault.age");
+    let legacy_path = aide_home().join("vault.age");
+    let vault_path = if vault_repo_path.exists() { vault_repo_path } else { legacy_path };
     if !vault_path.exists() { return Ok(Vec::new()); }
     let identity_path = aide_home().join("vault.key");
     if !identity_path.exists() { return Ok(Vec::new()); }
@@ -1323,7 +1340,7 @@ fn fix_vault_key_permissions(key_path: &Path) {
 }
 
 /// Rotate vault: decrypt with old key, generate new key, re-encrypt
-async fn cmd_vault_rotate(v: &vault::Vault, _vault_path: &str) -> Result<()> {
+async fn cmd_vault_rotate(v: &vault::Vault) -> Result<()> {
     // Decrypt with current key
     let plaintext = v.decrypt().await
         .context("cannot rotate: failed to decrypt current vault")?;
@@ -1359,45 +1376,37 @@ async fn cmd_vault_rotate(v: &vault::Vault, _vault_path: &str) -> Result<()> {
 }
 
 /// Show vault status with security audit
-fn cmd_vault_status(vault_path: &str, v: &vault::Vault) {
-    let path = std::path::Path::new(vault_path);
-    if path.exists() {
-        let meta = std::fs::metadata(path).unwrap();
-        println!("vault:    {} ({} bytes)", vault_path, meta.len());
-    } else {
-        println!("vault:    {} (not found)", vault_path);
-        return;
+async fn cmd_vault_status(v: &vault::Vault) {
+    let key_path = v.identity_path();
+
+    // Show public key
+    if let Ok(pubkey) = v.recipient().await {
+        println!("pubkey:   {}", pubkey);
     }
 
-    let key_path = v.identity_path();
     if key_path.exists() {
-        let key_meta = std::fs::metadata(&key_path).unwrap();
         println!("key:      {}", key_path.display());
 
         // Check permissions
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let key_meta = std::fs::metadata(&key_path).unwrap();
             let mode = key_meta.permissions().mode() & 0o777;
             if mode & 0o077 != 0 {
                 println!("  WARNING: key permissions {:o} too open (should be 600)", mode);
-                println!("  fix: chmod 600 {}", key_path.display());
             } else {
                 println!("  permissions: {:o} OK", mode);
             }
-        }
-
-        // Check if key and vault are in same directory (warning)
-        if key_path.parent() == path.parent() {
-            println!("  NOTE: key and vault in same directory");
         }
     } else {
         println!("key:      not found");
     }
 
-    // Count env vars
-    if let Ok(vars) = load_vault_env() {
-        println!("env vars: {}", vars.len());
+    // List keys
+    match v.list_keys().await {
+        Ok(keys) => println!("secrets:  {} keys", keys.len()),
+        Err(_) => println!("secrets:  (cannot decrypt)"),
     }
 
     // Check registry token

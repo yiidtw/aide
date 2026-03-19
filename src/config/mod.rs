@@ -23,6 +23,9 @@ pub struct AideMeta {
     pub data_dir: String,
     #[serde(default)]
     pub vault_path: Option<String>,
+    /// Path to the vault git repo (e.g., ~/claude_projects/aide-vault)
+    #[serde(default)]
+    pub vault_repo: Option<String>,
 }
 
 fn default_data_dir() -> String {
@@ -114,6 +117,7 @@ impl Default for AideConfig {
                 name: "aide.sh".to_string(),
                 data_dir: default_data_dir(),
                 vault_path: None,
+                vault_repo: None,
             },
             machines: HashMap::new(),
             dispatch: HashMap::new(),

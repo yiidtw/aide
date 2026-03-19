@@ -468,7 +468,11 @@ fn aide_home() -> PathBuf {
 }
 
 fn load_vault_env() -> Result<Vec<(String, String)>> {
-    let vault_path = aide_home().join("vault.age");
+    // Try vault repo first, then legacy ~/.aide/vault.age
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let vault_repo_path = std::path::PathBuf::from(&home).join("claude_projects/aide-vault/vault.age");
+    let legacy_path = aide_home().join("vault.age");
+    let vault_path = if vault_repo_path.exists() { vault_repo_path } else { legacy_path };
     if !vault_path.exists() {
         return Ok(Vec::new());
     }

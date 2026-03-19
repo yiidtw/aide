@@ -1,0 +1,23 @@
+{
+  "name": "aide-marketplace",
+  "owner": {
+    "name": "yiidtw",
+    "email": "yiidtw@gmail.com"
+  },
+  "metadata": {
+    "description": "Official aide.sh plugin marketplace — Deploy AI agents, just like Docker."
+  },
+  "plugins": [
+    {
+      "name": "aide",
+      "source": "./",
+      "description": "Deploy AI agents, just like Docker.",
+      "version": "0.4.1",
+      "author": {
+        "name": "yiidtw"
+      },
+      "keywords": ["agents", "deployment", "docker", "mcp", "automation"],
+      "category": "automation"
+    }
+  ]
+}

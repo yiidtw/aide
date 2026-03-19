@@ -223,6 +223,13 @@ enum Command {
         #[arg(long)]
         private: bool,
     },
+    /// Remove all aide data (~/.aide/) for clean reinstall
+    Clean {
+        /// Also remove vault keys (dangerous)
+        #[arg(long)]
+        include_vault: bool,
+    },
+
     // ─── Hidden aliases for backward compat ───
 
     /// Alias for 'run'
@@ -353,6 +360,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Whoami => return cmd_whoami(),
+        Command::Clean { include_vault } => return cmd_clean(*include_vault),
         Command::Cost => {
             let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
             return cmd_cost(&config.aide.data_dir);
@@ -510,6 +518,7 @@ async fn main() -> Result<()> {
         | Command::SetupMcp { .. }
         | Command::Deploy { .. }
         | Command::Whoami
+        | Command::Clean { .. }
         | Command::Cost => unreachable!(),
     }
 
@@ -2015,6 +2024,67 @@ async fn cmd_search(query: &str) -> Result<()> {
         }
         Err(e) => {
             bail!("failed to reach registry: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_clean(include_vault: bool) -> Result<()> {
+    let aide_dir = aide_home();
+    if !aide_dir.exists() {
+        println!("nothing to clean — {} does not exist", aide_dir.display());
+        return Ok(());
+    }
+
+    let mut removed = Vec::new();
+
+    // Always remove these
+    let dirs_to_remove = ["instances", "builds", "types"];
+    for dir_name in &dirs_to_remove {
+        let path = aide_dir.join(dir_name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+            removed.push(format!("  {}/", path.display()));
+        }
+    }
+
+    let files_to_remove = ["auth.json", "registry-tokens.json"];
+    for file_name in &files_to_remove {
+        let path = aide_dir.join(file_name);
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+            removed.push(format!("  {}", path.display()));
+        }
+    }
+
+    // Vault keys only with --include-vault
+    if include_vault {
+        let vault_files = ["vault.key", "vault.age"];
+        for file_name in &vault_files {
+            let path = aide_dir.join(file_name);
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+                removed.push(format!("  {} (vault)", path.display()));
+            }
+        }
+    }
+
+    if removed.is_empty() {
+        println!("nothing to clean");
+    } else {
+        println!("removed:");
+        for item in &removed {
+            println!("{}", item);
+        }
+        println!();
+        if !include_vault {
+            let vault_key = aide_dir.join("vault.key");
+            if vault_key.exists() {
+                println!("vault keys preserved. Use --include-vault to remove them too.");
+            }
+        } else {
+            println!("WARNING: vault keys removed. You will need to re-import secrets.");
         }
     }
 

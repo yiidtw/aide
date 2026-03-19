@@ -1,0 +1,13 @@
+{
+  "name": "aide",
+  "version": "0.4.1",
+  "description": "Deploy AI agents, just like Docker.",
+  "author": {
+    "name": "yiidtw",
+    "url": "https://github.com/yiidtw"
+  },
+  "homepage": "https://aide.sh",
+  "repository": "https://github.com/yiidtw/aide",
+  "license": "MIT",
+  "keywords": ["agents", "deployment", "docker", "mcp", "automation"]
+}

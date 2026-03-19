@@ -1,0 +1,71 @@
+## aide.sh — Generic issue-driven agent workflow
+## Copy this to your agent repo at .github/workflows/agent.yml
+##
+## How it works:
+##   1. Someone opens an issue or comments on one
+##   2. This workflow triggers, checks it's from an allowed user
+##   3. Passes the issue body to the agent's skill
+##   4. Posts the result as a comment
+##   5. Commits any memory changes
+##
+## Required secrets:
+##   GITHUB_TOKEN — auto-provided by GitHub Actions
+##   (add ANTHROPIC_API_KEY if agent uses claude -p)
+
+name: Agent
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: agent-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       contains(fromJSON('["yiidtw"]'), github.event.comment.user.login)) ||
+      (github.event_name == 'issues' &&
+       contains(fromJSON('["yiidtw"]'), github.event.issue.user.login))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install aide
+        run: |
+          VERSION="0.4.0"
+          mkdir -p "$HOME/.local/bin"
+          curl -sL -o "$HOME/.local/bin/aide" \
+            "https://github.com/yiidtw/aide/releases/download/v${VERSION}/aide-$(uname -m)-unknown-linux-gnu"
+          chmod +x "$HOME/.local/bin/aide" || true
+
+      - name: Run agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            BODY="${{ github.event.comment.body }}"
+          else
+            BODY="${{ github.event.issue.body }}"
+          fi
+          ISSUE="${{ github.event.issue.number }}"
+
+          # Replace AGENT_NAME with your agent's skill dispatch
+          RESULT=$(aide exec -p AGENT_NAME "$BODY" 2>&1 || echo "Agent error")
+
+          gh issue comment "$ISSUE" --body "$RESULT"
+
+      - name: Commit memory
+        run: |
+          git config user.name "agent[bot]"
+          git config user.email "agent@aide.sh"
+          git pull --rebase || true
+          git add memory/ || true
+          git diff --cached --quiet || git commit -m "memory: issue #${{ github.event.issue.number }}"
+          git push || true

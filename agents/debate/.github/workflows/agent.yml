@@ -1,0 +1,74 @@
+name: Agent
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: agent-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       contains(fromJSON('["yiidtw"]'), github.event.comment.user.login)) ||
+      (github.event_name == 'issues' &&
+       contains(fromJSON('["yiidtw"]'), github.event.issue.user.login))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up agent tools
+        run: |
+          # Install Claude Code for agent reasoning
+          npm install -g @anthropic-ai/claude-code || true
+          # Install codex + gemini for triad mode
+          npm install -g @openai/codex || true
+          npm install -g @anthropic-ai/claude-code || true
+
+      - name: Run agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          export PATH="$HOME/.local/bin:$(npm bin -g):$PATH"
+
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            BODY="${{ github.event.comment.body }}"
+          else
+            BODY="${{ github.event.issue.body }}"
+          fi
+          ISSUE="${{ github.event.issue.number }}"
+          TITLE="${{ github.event.issue.title }}"
+
+          # Route: if title starts with "debate:" run a debate
+          if echo "$TITLE" | grep -qi "^debate:"; then
+            TOPIC=$(echo "$TITLE" | sed 's/^debate:\s*//i')
+            RESULT=$(bash skills/meet.sh "$TOPIC" --mode claude --rounds 3 --termination heyting 2>&1)
+          else
+            # Default: use Claude to reason about the issue
+            RESULT=$(echo "You are the Three Sages debate agent. Given this issue, decide if it's a debate topic or a question about the agent. If debate, run the debate. Otherwise explain what you can do.
+
+Issue #$ISSUE: $TITLE
+$BODY" | claude -p --model sonnet 2>&1 || echo "Agent needs API credits to respond autonomously.")
+          fi
+
+          gh issue comment "$ISSUE" --body "$(cat <<EOF
+$RESULT
+
+---
+*🤖 debate.ydwu — Three Sages agent*
+EOF
+)"
+
+      - name: Commit memory
+        run: |
+          git config user.name "agent[bot]"
+          git config user.email "agent@aide.sh"
+          git pull --rebase || true
+          git add memory/ || true
+          git diff --cached --quiet || git commit -m "memory: issue #${{ github.event.issue.number }}"
+          git push || true

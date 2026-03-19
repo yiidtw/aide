@@ -65,8 +65,8 @@ impl Daemon {
         // Start Telegram bots for instances that declare [expose.telegram]
         self.start_telegram_bots();
 
-        // Start inbox poller (polls CF Worker email gateway)
-        self.start_inbox_poller();
+        // Start GitHub Issues pollers for instances with github_repo
+        self.start_github_issues_poller();
 
         info!("aide daemon ready, waiting for signals");
 
@@ -163,92 +163,9 @@ impl Daemon {
         }
     }
 
-    fn start_inbox_poller(&self) {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let auth_path = PathBuf::from(&home).join(".aide").join("auth.json");
-
-        let username = if let Ok(content) = std::fs::read_to_string(&auth_path) {
-            serde_json::from_str::<serde_json::Value>(&content)
-                .ok()
-                .and_then(|v| v["username"].as_str().map(|s| s.to_string()))
-        } else {
-            None
-        };
-
-        let Some(username) = username else {
-            info!("no auth.json found, inbox polling disabled");
-            return;
-        };
-
+    fn start_github_issues_poller(&self) {
         let data_dir = self.config.aide.data_dir.clone();
-        info!(username = %username, "starting inbox poller (60s interval)");
-
-        tokio::spawn(async move {
-            let client = reqwest::Client::new();
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
-            let gateway_url = "https://aide-email-gateway.yiidtw.workers.dev";
-
-            loop {
-                interval.tick().await;
-
-                let url = format!("{}/inbox/{}", gateway_url, username);
-                match client.get(&url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        if let Ok(body) = resp.json::<serde_json::Value>().await {
-                            let messages = body["messages"].as_array();
-                            if let Some(msgs) = messages {
-                                for msg in msgs {
-                                    let from = msg["from"].as_str().unwrap_or("?");
-                                    let subject = msg["subject"].as_str().unwrap_or("?");
-                                    let to = msg["to"].as_str().unwrap_or("?");
-                                    let id = msg["id"].as_str().unwrap_or("");
-
-                                    // Parse agent name from "to" field: agent.user@aide.sh
-                                    let agent = to
-                                        .split('@')
-                                        .next()
-                                        .unwrap_or("")
-                                        .split('.')
-                                        .next()
-                                        .unwrap_or("");
-
-                                    info!(from = %from, subject = %subject, agent = %agent, "inbox message");
-
-                                    // Log to the matching instance
-                                    let mgr = InstanceManager::new(&data_dir);
-                                    if let Ok(instances) = mgr.list() {
-                                        for inst in &instances {
-                                            if inst.agent_type == agent
-                                                || inst.name.starts_with(agent)
-                                            {
-                                                let _ = mgr.append_log(
-                                                    &inst.name,
-                                                    &format!(
-                                                        "inbox: from={} subject=\"{}\"",
-                                                        from, subject
-                                                    ),
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    // Ack the message
-                                    let _ = client
-                                        .delete(&format!(
-                                            "{}/inbox/{}/{}",
-                                            gateway_url, username, id
-                                        ))
-                                        .send()
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                    _ => {} // silent on error
-                }
-            }
-        });
+        crate::expose::github::start_github_issues_ticker(data_dir);
     }
 
     fn start_cron_ticker(&self) {
@@ -453,19 +370,32 @@ fn exec_cron_skill(
     skill_name: &str,
     env: &[(String, String)],
 ) -> Result<(i32, String, String)> {
-    let script = inst_dir
-        .join("skills")
-        .join(format!("{}.sh", skill_name));
+    // Try .ts first, then .sh
+    let script = ["ts", "sh"]
+        .iter()
+        .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
+        .find(|p| p.exists());
 
-    if !script.exists() {
-        anyhow::bail!("skill script not found: {}", script.display());
-    }
+    let script = match script {
+        Some(s) => s,
+        None => anyhow::bail!("skill script not found: {}/skills/{}.{{ts,sh}}", inst_dir.display(), skill_name),
+    };
 
-    let mut cmd = std::process::Command::new("bash");
-    cmd.arg(&script);
+    let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("sh");
+
+    let mut cmd = if ext == "ts" {
+        let bun = crate::find_or_install_bun()?;
+        let mut c = std::process::Command::new(bun);
+        c.arg("run");
+        c.arg(&script);
+        c
+    } else {
+        let mut c = std::process::Command::new("bash");
+        c.arg(&script);
+        c
+    };
+
     cmd.current_dir(inst_dir);
-
-    // Set AIDE_INSTANCE_DIR so scripts know where they are
     cmd.env("AIDE_INSTANCE_DIR", inst_dir);
 
     for (k, v) in env {

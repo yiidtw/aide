@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Gather the combined content from an instance directory for mounting.
-/// Reads persona.md, seed/*.md, memory/*.md, and instance.toml metadata.
+/// Reads persona.md, knowledge/*.md, memory/*.md, and instance.toml metadata.
 fn gather_instance_content(instance_dir: &Path, instance_name: &str) -> Result<String> {
     let mut sections = Vec::new();
 
@@ -52,21 +52,23 @@ fn gather_instance_content(instance_dir: &Path, instance_name: &str) -> Result<S
         }
     }
 
-    // Seed files
-    let seed_dir = instance_dir.join("seed");
-    if seed_dir.is_dir() {
-        let mut seed_files = collect_md_files(&seed_dir)?;
-        seed_files.sort();
-        if !seed_files.is_empty() {
-            let mut seed_section = vec!["## Seed Knowledge\n".to_string()];
-            for path in &seed_files {
-                let rel = path.strip_prefix(&seed_dir).unwrap_or(path);
+    // Knowledge files (check knowledge/ first, fall back to legacy seed/)
+    let knowledge_dir = instance_dir.join("knowledge");
+    let legacy_seed_dir = instance_dir.join("seed");
+    let kb_dir = if knowledge_dir.is_dir() { &knowledge_dir } else { &legacy_seed_dir };
+    if kb_dir.is_dir() {
+        let mut kb_files = collect_md_files(kb_dir)?;
+        kb_files.sort();
+        if !kb_files.is_empty() {
+            let mut kb_section = vec!["## Knowledge\n".to_string()];
+            for path in &kb_files {
+                let rel = path.strip_prefix(kb_dir).unwrap_or(path);
                 let content = fs::read_to_string(path)?;
                 if !content.trim().is_empty() {
-                    seed_section.push(format!("### {}\n\n{}", rel.display(), content.trim()));
+                    kb_section.push(format!("### {}\n\n{}", rel.display(), content.trim()));
                 }
             }
-            sections.push(seed_section.join("\n\n"));
+            sections.push(kb_section.join("\n\n"));
         }
     }
 

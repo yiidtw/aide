@@ -31,10 +31,11 @@ dependencies = [
 
 [[package]]
 name = "aide"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "crossterm",

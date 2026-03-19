@@ -20,6 +20,7 @@ use crate::config::AgentDef;
 ///   instance.toml   # this manifest
 ///   persona.md      # copied from agent type definition
 ///   memory/         # persistent memory across runs
+///   knowledge/      # knowledge files (from agent image)
 ///   logs/           # daily log files (YYYY-MM-DD.log)
 /// ```
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,6 +41,10 @@ pub struct InstanceManifest {
     /// `aide.sh cron add/rm` commands.
     #[serde(default)]
     pub cron: Vec<CronEntry>,
+    /// GitHub repo for issue-driven workflow (e.g. `"yiidtw/debate-agent"`).
+    /// Set by `aide deploy --github`. Used by the daemon to poll for new issues.
+    #[serde(default)]
+    pub github_repo: Option<String>,
 }
 
 /// A scheduled skill execution entry.
@@ -140,7 +145,7 @@ impl InstanceManager {
 
     /// Spawn a new instance from an agent type definition.
     ///
-    /// Creates the instance directory structure (`memory/`, `logs/`),
+    /// Creates the instance directory structure (`memory/`, `knowledge/`, `logs/`),
     /// copies the persona file if one exists in the agent definition,
     /// and writes the initial `instance.toml` manifest.
     ///
@@ -165,6 +170,7 @@ impl InstanceManager {
 
         // Create directory structure
         fs::create_dir_all(inst_dir.join("memory"))?;
+        fs::create_dir_all(inst_dir.join("knowledge"))?;
         fs::create_dir_all(inst_dir.join("logs"))?;
 
         let manifest = InstanceManifest {
@@ -175,6 +181,7 @@ impl InstanceManager {
             role: def.role.clone(),
             domains: def.domains.clone(),
             cron: Vec::new(),
+            github_repo: None,
         };
 
         // Write persona.md stub if agent type has one

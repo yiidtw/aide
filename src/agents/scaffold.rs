@@ -10,11 +10,11 @@ use std::path::Path;
 ///
 /// ```text
 /// <name>/
-///   Agentfile.toml    # manifest with [agent], [persona], [skills.hello], [seed], [env]
+///   Agentfile.toml    # manifest with [agent], [persona], [skills.hello], [knowledge], [env]
 ///   persona.md        # starter persona with TODOs
 ///   skills/
-///     hello.sh        # example executable skill script (chmod 755)
-///   seed/
+///     hello.ts        # example TypeScript skill (runs via bun)
+///   knowledge/
 ///     .gitkeep        # placeholder so the directory is tracked by git
 /// ```
 ///
@@ -32,7 +32,7 @@ pub fn init_agent(name: &str, dir: &Path) -> Result<()> {
 
     // Create directory structure
     fs::create_dir_all(dir.join("skills"))?;
-    fs::create_dir_all(dir.join("seed"))?;
+    fs::create_dir_all(dir.join("knowledge"))?;
 
     // Agentfile.toml
     let agentfile = format!(
@@ -46,14 +46,14 @@ author = "TODO: your username"
 file = "persona.md"
 
 [skills.hello]
-script = "skills/hello.sh"
+script = "skills/hello.ts"
 description = "A greeting skill"
 usage = "hello [name]"
 # schedule = "0 9 * * *"    # uncomment for cron
 # env = ["MY_API_KEY"]      # uncomment for secrets
 
-[seed]
-dir = "seed/"
+[knowledge]
+dir = "knowledge/"
 
 [env]
 required = []
@@ -83,22 +83,20 @@ TODO: describe what this agent does
     );
     fs::write(dir.join("persona.md"), persona)?;
 
-    // skills/hello.sh
+    // skills/hello.ts
     let hello = format!(
-        r#"#!/usr/bin/env bash
-# hello — a greeting skill
-# usage: hello [name]
-
-NAME="${{1:-world}}"
-echo "Hello, ${{NAME}}! I am {name}."
+        r#"// hello — a greeting skill
+// usage: hello [name]
+const name = process.argv[2] || "world";
+console.log(`Hello, ${{name}}! I'm your aide agent.`);
 "#
     );
-    let hello_path = dir.join("skills/hello.sh");
+    let hello_path = dir.join("skills/hello.ts");
     fs::write(&hello_path, hello)?;
     fs::set_permissions(&hello_path, fs::Permissions::from_mode(0o755))?;
 
-    // seed/.gitkeep
-    fs::write(dir.join("seed/.gitkeep"), "")?;
+    // knowledge/.gitkeep
+    fs::write(dir.join("knowledge/.gitkeep"), "")?;
 
     Ok(())
 }

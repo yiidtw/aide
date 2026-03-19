@@ -463,8 +463,9 @@ async fn main() -> Result<()> {
                                 .to_string()
                         })
                         .unwrap_or_else(|| {
+                            // Default to ~/.aide so vault.age lives at ~/.aide/vault.age
                             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                            format!("{}/claude_projects/aide-vault", home)
+                            format!("{}/.aide", home)
                         })
                 });
             let v = vault::Vault::from_config(&vault_repo, None);
@@ -729,12 +730,12 @@ fn cmd_run_from_pulled(
         }
     }
 
-    // Copy seed data
-    if let Some(seed) = &spec.seed {
-        let seed_src = types_dir.join(&seed.dir);
-        if seed_src.exists() {
-            let seed_dst = inst_dir.join("seed");
-            copy_dir_recursive(&seed_src, &seed_dst)?;
+    // Copy knowledge data
+    if let Some(knowledge) = &spec.knowledge {
+        let knowledge_src = types_dir.join(&knowledge.dir);
+        if knowledge_src.exists() {
+            let knowledge_dst = inst_dir.join("knowledge");
+            copy_dir_recursive(&knowledge_src, &knowledge_dst)?;
         }
     }
 
@@ -785,10 +786,8 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
     let scoped_env = load_scoped_env(&inst_dir, Some(skill_name))?;
 
     // Resolve and dispatch
-    let local_script = inst_dir.join("skills").join(format!("{}.sh", skill_name));
-
-    let (exit_code, stdout, stderr) = if local_script.exists() {
-        exec_skill_script(&local_script, skill_args, &inst_dir, &scoped_env)?
+    let (exit_code, stdout, stderr) = if let Some(script) = resolve_skill_script(&inst_dir, skill_name) {
+        exec_skill_script(&script, skill_args, &inst_dir, &scoped_env)?
     } else {
         exec_wonskill(skill_name, skill_args, &inst_dir, &scoped_env)?
     };
@@ -894,9 +893,7 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
 
             // Execute the skill
             let scoped_env = load_scoped_env(&inst_dir, Some(skill_name))?;
-            let local_script = inst_dir.join("skills").join(format!("{}.sh", skill_name));
-
-            if local_script.exists() {
+            if let Some(local_script) = resolve_skill_script(&inst_dir, skill_name) {
                 let (exit_code, stdout, stderr) =
                     exec_skill_script(&local_script, skill_args, &inst_dir, &scoped_env)?;
                 if !stdout.is_empty() {
@@ -1147,10 +1144,85 @@ fn cmd_unmount(mgr: &InstanceManager, instance: &str, target: &str) -> Result<()
 
 // ─── Skill execution ───
 
-/// Execute a local skill script with scoped env
+/// Resolve the skill script path, checking .sh and .ts extensions.
+fn resolve_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
+    let skills_dir = inst_dir.join("skills");
+    // Try .ts first (preferred), then .sh (legacy)
+    for ext in &["ts", "sh"] {
+        let path = skills_dir.join(format!("{}.{}", skill_name, ext));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Find or install bun runtime for .ts skills.
+pub fn find_or_install_bun() -> Result<PathBuf> {
+    // Check PATH
+    if let Ok(output) = std::process::Command::new("which").arg("bun").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+    }
+
+    // Check common locations
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let candidates = [
+        format!("{}/.bun/bin/bun", home),
+        "/usr/local/bin/bun".to_string(),
+    ];
+    for candidate in &candidates {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // Auto-install
+    tracing::info!("bun not found, installing...");
+    let install = std::process::Command::new("bash")
+        .args(["-c", "curl -fsSL https://bun.sh/install | bash 2>&1"])
+        .output()
+        .context("failed to run bun installer")?;
+
+    if !install.status.success() {
+        bail!(
+            "bun installation failed: {}",
+            String::from_utf8_lossy(&install.stderr)
+        );
+    }
+
+    // Should be at ~/.bun/bin/bun now
+    let installed = PathBuf::from(format!("{}/.bun/bin/bun", home));
+    if installed.exists() {
+        tracing::info!("bun installed at {}", installed.display());
+        Ok(installed)
+    } else {
+        bail!("bun installed but binary not found at {}", installed.display())
+    }
+}
+
+/// Execute a local skill script with scoped env.
+/// Supports .sh (bash) and .ts (bun) scripts.
 fn exec_skill_script(script: &Path, args: &str, working_dir: &Path, env: &[(String, String)]) -> Result<(i32, String, String)> {
-    let mut cmd = std::process::Command::new("bash");
-    cmd.arg(script);
+    let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("sh");
+
+    let mut cmd = if ext == "ts" {
+        let bun = find_or_install_bun()?;
+        let mut c = std::process::Command::new(bun);
+        c.arg("run");
+        c.arg(script);
+        c
+    } else {
+        let mut c = std::process::Command::new("bash");
+        c.arg(script);
+        c
+    };
+
     if !args.is_empty() {
         for arg in args.split_whitespace() {
             cmd.arg(arg);
@@ -1279,7 +1351,7 @@ fn return_empty_spec() -> AgentfileSpec {
         },
         persona: None,
         skills: std::collections::HashMap::new(),
-        seed: None,
+        knowledge: None,
         env: None,
         soul: None,
         expose: None,
@@ -1288,11 +1360,11 @@ fn return_empty_spec() -> AgentfileSpec {
 }
 
 fn load_vault_env() -> Result<Vec<(String, String)>> {
-    // Try vault repo first, then legacy ~/.aide/vault.age
+    // Try ~/.aide/vault.age first, then vault repo as fallback
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let default_path = aide_home().join("vault.age");
     let vault_repo_path = PathBuf::from(&home).join("claude_projects/aide-vault/vault.age");
-    let legacy_path = aide_home().join("vault.age");
-    let vault_path = if vault_repo_path.exists() { vault_repo_path } else { legacy_path };
+    let vault_path = if default_path.exists() { default_path } else { vault_repo_path };
     if !vault_path.exists() { return Ok(Vec::new()); }
     let identity_path = aide_home().join("vault.key");
     if !identity_path.exists() { return Ok(Vec::new()); }
@@ -1565,8 +1637,8 @@ fn cmd_init(name: &str) -> Result<()> {
     println!("created {}/", name);
     println!("  Agentfile.toml");
     println!("  persona.md");
-    println!("  skills/hello.sh");
-    println!("  seed/");
+    println!("  skills/hello.ts");
+    println!("  knowledge/");
     println!();
     println!("next: edit Agentfile.toml, then `aide.sh build {}/`", name);
     Ok(())
@@ -2034,7 +2106,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
 
     // Derive repo name from instance: school.ydwu → school-agent
     let agent_name = instance.split('.').next().unwrap_or(instance);
-    let repo_name = format!("{}-agent", agent_name);
+    let repo_name = format!("aide-{}", agent_name);
     let visibility = if private { "--private" } else { "--public" };
 
     println!("deploying {} → github.com/{}/{}", instance, username, repo_name);
@@ -2059,84 +2131,39 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     }
     std::fs::create_dir_all(&tmp_dir)?;
 
-    // Copy agent files
-    copy_dir_recursive(&inst_dir, &tmp_dir)?;
+    // Copy agent files (skip logs/ to keep repo clean)
+    for entry in std::fs::read_dir(&inst_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "logs" {
+            continue;
+        }
+        let dst = tmp_dir.join(&name);
+        if entry.path().is_dir() {
+            copy_dir_recursive(&entry.path(), &dst)?;
+        } else {
+            std::fs::copy(entry.path(), &dst)?;
+        }
+    }
 
-    // Create .github/workflows/agent.yml
-    let workflow_dir = tmp_dir.join(".github").join("workflows");
-    std::fs::create_dir_all(&workflow_dir)?;
-
-    let workflow_template = r#"name: Agent
-on:
-  issues:
-    types: [opened]
-  issue_comment:
-    types: [created]
-
-concurrency:
-  group: agent-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
-jobs:
-  respond:
-    runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'issue_comment' &&
-       github.event.comment.user.login != 'github-actions[bot]' &&
-       contains(fromJSON('["USERNAME_PLACEHOLDER"]'), github.event.comment.user.login)) ||
-      (github.event_name == 'issues' &&
-       contains(fromJSON('["USERNAME_PLACEHOLDER"]'), github.event.issue.user.login))
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install aide
-        run: |
-          VERSION="0.4.0"
-          ARCH=$(uname -m)
-          mkdir -p "$HOME/.local/bin"
-          curl -sL -o "$HOME/.local/bin/aide" \
-            "https://github.com/yiidtw/aide/releases/download/v${VERSION}/aide-${ARCH}-unknown-linux-gnu"
-          chmod +x "$HOME/.local/bin/aide"
-
-      - name: Run agent
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          if [ "${{ github.event_name }}" = "issue_comment" ]; then
-            BODY="${{ github.event.comment.body }}"
-          else
-            BODY="${{ github.event.issue.body }}"
-          fi
-          ISSUE="${{ github.event.issue.number }}"
-          RESULT=$(aide exec -p AGENT_PLACEHOLDER "$BODY" 2>&1 || echo "Agent error")
-          gh issue comment "$ISSUE" --body "$RESULT"
-
-      - name: Commit memory
-        run: |
-          git config user.name "agent[bot]"
-          git config user.email "agent@aide.sh"
-          git pull --rebase || true
-          git add memory/ || true
-          git diff --cached --quiet || git commit -m "memory: issue #${{ github.event.issue.number }}"
-          git push || true
-"#;
-
-    let workflow = workflow_template
-        .replace("USERNAME_PLACEHOLDER", &username)
-        .replace("AGENT_PLACEHOLDER", agent_name);
-
-    std::fs::write(workflow_dir.join("agent.yml"), workflow)?;
-
-    // Create memory/ dir
+    // Ensure memory/ and knowledge/ dirs exist
     std::fs::create_dir_all(tmp_dir.join("memory"))?;
     std::fs::write(tmp_dir.join("memory/.gitkeep"), "")?;
+    std::fs::create_dir_all(tmp_dir.join("knowledge"))?;
+    if !tmp_dir.join("knowledge/.gitkeep").exists() {
+        std::fs::write(tmp_dir.join("knowledge/.gitkeep"), "")?;
+    }
 
-    // Create README
+    // Create README pointing to persona.md
     let readme = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
-        format!("# {}\n\n{}\n\nPowered by [aide.sh](https://aide.sh)\n",
-            agent_name,
-            spec.agent.description.as_deref().unwrap_or("An aide.sh agent"))
+        let desc = spec.agent.description.as_deref().unwrap_or("An aide.sh agent");
+        let persona_note = if spec.persona.is_some() {
+            "\n\nSee [persona.md](persona.md) for agent personality and behavior.\n"
+        } else {
+            "\n"
+        };
+        format!("# {}\n\n{}{}\nPowered by [aide.sh](https://aide.sh)\n",
+            agent_name, desc, persona_note)
     } else {
         format!("# {}\n\nAn aide.sh agent.\n", agent_name)
     };
@@ -2166,6 +2193,15 @@ jobs:
 
     // Cleanup
     std::fs::remove_dir_all(&tmp_dir)?;
+
+    // Write github_repo back to instance.toml
+    let github_repo_ref = format!("{}/{}", username, repo_name);
+    if let Ok(Some(mut manifest)) = mgr.get(instance) {
+        manifest.github_repo = Some(github_repo_ref.clone());
+        let manifest_path = mgr.base_dir().join(instance).join("instance.toml");
+        let content = toml::to_string_pretty(&manifest)?;
+        std::fs::write(&manifest_path, content)?;
+    }
 
     println!("  repo: https://github.com/{}/{}", username, repo_name);
     println!("  workflow: issue-driven agent");

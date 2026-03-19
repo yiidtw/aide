@@ -48,7 +48,7 @@ export default {
     console.log(`Email received: agent=${agentName} user=${username} from=${from} subject=${subject}`);
 
     // Create GitHub issue on agent's repo (if configured)
-    await createGitHubIssue(env, agentName, from, subject, body);
+    await createGitHubIssue(env, agentName, username, from, subject, body);
 
     await sendReply(env.RESEND_API_KEY, from, agentName, username, subject, body);
     await message.forward(env.ADMIN_EMAIL);
@@ -133,16 +133,13 @@ function parseAgentRepos(envVal: string | undefined): Record<string, string> {
 }
 
 async function createGitHubIssue(
-  env: Env, agentName: string, from: string, subject: string, body: string,
+  env: Env, agentName: string, username: string, from: string, subject: string, body: string,
 ): Promise<void> {
-  if (!env.GITHUB_TOKEN || !env.AGENT_REPOS) return;
+  if (!env.GITHUB_TOKEN) return;
 
   const repos = parseAgentRepos(env.AGENT_REPOS);
-  const repo = repos[agentName];
-  if (!repo) {
-    console.log(`No GitHub repo configured for agent: ${agentName}`);
-    return;
-  }
+  // Explicit mapping first, then convention: aide-{agentName} under the username
+  const repo = repos[agentName] || `${username}/aide-${agentName}`;
 
   try {
     const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {

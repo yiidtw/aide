@@ -51,8 +51,8 @@ use std::path::{Path, PathBuf};
 /// description = "Email triage"
 /// usage = "email [check|unread|send TO SUBJ]"
 ///
-/// [seed]
-/// dir = "seed/"
+/// [knowledge]
+/// dir = "knowledge/"
 ///
 /// [env]
 /// required = ["LMS_TOKEN"]
@@ -73,10 +73,10 @@ pub struct AgentfileSpec {
     /// Each key becomes a subcommand in `aide.sh exec <instance> <skill>`.
     #[serde(default)]
     pub skills: HashMap<String, SkillDef>,
-    /// The `[seed]` table. Optional. Points to a directory of initial knowledge
-    /// files that are bundled into the agent archive.
-    #[serde(default)]
-    pub seed: Option<SeedSection>,
+    /// The `[knowledge]` table (also accepts legacy `[seed]`). Optional.
+    /// Points to a directory of knowledge files that are bundled into the agent archive.
+    #[serde(default, alias = "seed")]
+    pub knowledge: Option<KnowledgeSection>,
     /// The `[env]` table. Optional. Declares required and optional environment
     /// variables that the agent needs at runtime (injected from the vault).
     #[serde(default)]
@@ -138,6 +138,9 @@ pub struct ExposeSection {
     /// Telegram bot config. The agent responds to messages via Telegram Bot API.
     #[serde(default)]
     pub telegram: Option<TelegramExpose>,
+    /// GitHub Issues config. The agent responds to issues on a GitHub repo.
+    #[serde(default)]
+    pub github: Option<GitHubExpose>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +148,22 @@ pub struct TelegramExpose {
     /// Environment variable name containing the Telegram bot token.
     /// Token is loaded from the vault at runtime.
     pub token_env: String,
+}
+
+/// GitHub Issues expose configuration.
+///
+/// Allows the agent to be reached via GitHub Issues on a specific repo.
+/// The daemon polls for new issues and comments, executes skills, and
+/// posts results as issue comments.
+///
+/// ```toml
+/// [expose]
+/// github = { repo = "yiidtw/debate-agent" }
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct GitHubExpose {
+    /// GitHub repo in `owner/name` format (e.g. `"yiidtw/debate-agent"`).
+    pub repo: String,
 }
 
 /// LLM runtime hints for daemon mode.
@@ -284,20 +303,22 @@ pub struct SkillDef {
     pub usage: Option<String>,
 }
 
-/// Seed data configuration.
+/// Knowledge directory configuration.
 ///
-/// Points to a directory of initial knowledge files (documents, configs,
+/// Points to a directory of knowledge files (documents, configs,
 /// templates) that are bundled into the agent archive. These files are
 /// copied into the instance at spawn time, providing the agent with
 /// baseline context.
 ///
 /// ```toml
-/// [seed]
-/// dir = "seed/"
+/// [knowledge]
+/// dir = "knowledge/"
 /// ```
+///
+/// For backward compatibility, `[seed]` with `dir = "seed/"` is also accepted.
 #[derive(Debug, Deserialize)]
-pub struct SeedSection {
-    /// Path to the seed directory, relative to the agent root.
+pub struct KnowledgeSection {
+    /// Path to the knowledge directory, relative to the agent root.
     /// All files within are recursively included in the build archive.
     pub dir: String,
 }
@@ -360,12 +381,12 @@ impl AgentfileSpec {
     /// 1. **Persona file** — if `[persona]` is set, the referenced file must exist.
     /// 2. **Skill files** — each skill must have exactly one of `script` or `prompt`,
     ///    and the referenced file must exist on disk.
-    /// 3. **Seed directory** — if `[seed]` is set, the directory should exist
-    ///    (missing seed dir produces a warning, not an error).
+    /// 3. **Knowledge directory** — if `[knowledge]` is set, the directory should exist
+    ///    (missing knowledge dir produces a warning, not an error).
     ///
     /// # Returns
     ///
-    /// A `Vec<String>` of non-fatal warnings (e.g., seed dir missing, both script
+    /// A `Vec<String>` of non-fatal warnings (e.g., knowledge dir missing, both script
     /// and prompt specified). Fatal problems cause an `Err` return.
     pub fn validate(&self, dir: &Path) -> Result<Vec<String>> {
         let mut warnings = Vec::new();
@@ -420,13 +441,13 @@ impl AgentfileSpec {
             }
         }
 
-        // Check seed dir
-        if let Some(seed) = &self.seed {
-            let seed_path = dir.join(&seed.dir);
-            if !seed_path.exists() {
+        // Check knowledge dir
+        if let Some(knowledge) = &self.knowledge {
+            let knowledge_path = dir.join(&knowledge.dir);
+            if !knowledge_path.exists() {
                 warnings.push(format!(
-                    "seed directory not found: {} — will be ignored",
-                    seed.dir
+                    "knowledge directory not found: {} — will be ignored",
+                    knowledge.dir
                 ));
             }
         }
@@ -513,7 +534,7 @@ impl AgentfileSpec {
     /// - `Agentfile.toml` (always)
     /// - The persona file (if `[persona]` is set)
     /// - All skill script and prompt files
-    /// - All files in the seed directory (recursively, if `[seed]` is set)
+    /// - All files in the knowledge directory (recursively, if `[knowledge]` is set)
     ///
     /// Does NOT include dotfiles, build artifacts, or anything outside the
     /// declared manifest. Call [`validate()`](Self::validate) first to ensure
@@ -539,11 +560,11 @@ impl AgentfileSpec {
             }
         }
 
-        // Seed directory — collect all files recursively
-        if let Some(seed) = &self.seed {
-            let seed_path = dir.join(&seed.dir);
-            if seed_path.exists() {
-                collect_dir_recursive(&seed_path, &mut files)?;
+        // Knowledge directory — collect all files recursively
+        if let Some(knowledge) = &self.knowledge {
+            let knowledge_path = dir.join(&knowledge.dir);
+            if knowledge_path.exists() {
+                collect_dir_recursive(&knowledge_path, &mut files)?;
             }
         }
 

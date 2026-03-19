@@ -51,7 +51,7 @@ pub struct LintResult {
 ///     (`sk-ant-`, `AKIA`, `ghp_`, etc.).
 /// 13. **Skill description** — warns if a skill is missing a `description` field.
 /// 14. **Skill usage** — warns if a skill is missing a `usage` field.
-/// 15. **Seed dir** — if `[seed]` is set, the directory should exist.
+/// 15. **Knowledge dir** — if `[knowledge]` is set, the directory should exist.
 /// 16. **Env consistency** — warns if skills reference env vars not declared in `[env]`.
 ///
 /// # Returns
@@ -186,13 +186,13 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
         }
     }
 
-    // 14. Seed directory exists if declared
-    if let Some(seed) = &spec.seed {
-        let seed_path = dir.join(&seed.dir);
-        if !seed_path.exists() {
-            warnings.push(format!("seed directory not found: {}", seed.dir));
+    // 14. Knowledge directory exists if declared
+    if let Some(knowledge) = &spec.knowledge {
+        let knowledge_path = dir.join(&knowledge.dir);
+        if !knowledge_path.exists() {
+            warnings.push(format!("knowledge directory not found: {}", knowledge.dir));
         } else {
-            passed.push(format!("seed directory {} exists", seed.dir));
+            passed.push(format!("knowledge directory {} exists", knowledge.dir));
         }
     }
 

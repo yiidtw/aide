@@ -141,6 +141,9 @@ impl Vault {
     async fn encrypt_single(&self, plaintext: &[u8]) -> Result<()> {
         let recipient = self.recipient().await?;
 
+        // Ensure repo_dir exists (e.g., ~/.aide on clean install)
+        tokio::fs::create_dir_all(&self.repo_dir).await?;
+
         let mut child = Command::new("age")
             .arg("-r")
             .arg(&recipient)

@@ -1,6 +1,6 @@
 [package]
 name = "aide"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "aide.sh — Docker for AI agents"
 license = "MIT"
@@ -33,6 +33,7 @@ mime_guess = "2"
 tower-http = { version = "0.6", features = ["cors"] }
 ratatui = "0.29"
 crossterm = "0.28"
+base64 = "0.22.1"
 
 [profile.release]
 strip = true

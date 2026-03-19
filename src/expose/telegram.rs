@@ -151,12 +151,12 @@ pub async fn run_telegram_bot(data_dir: &str, instance: &str, token: &str) -> Re
             let skill_name = parts[0].trim_start_matches('/');
             let skill_args = if parts.len() > 1 { parts[1] } else { "" };
 
-            // Check if skill exists
-            let script = inst_dir
-                .join("skills")
-                .join(format!("{}.sh", skill_name));
+            // Check if skill exists (.ts or .sh)
+            let script = ["ts", "sh"].iter()
+                .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
+                .find(|p| p.exists());
 
-            if !script.exists() {
+            if script.is_none() {
                 // Skill not found — try claude -p for natural language
                 info!(instance = %instance, text = %text, "no matching skill, trying claude -p");
                 let _ = mgr.append_log(instance, &format!("telegram-prompt: {}", text));
@@ -288,8 +288,10 @@ fn try_claude_prompt(instance: &str, query: &str, inst_dir: &Path) -> Option<Str
             let skill_name = parts[0];
             let args = if parts.len() > 1 { parts[1] } else { "" };
 
-            let script = inst_dir.join("skills").join(format!("{}.sh", skill_name));
-            if script.exists() {
+            let script = ["ts", "sh"].iter()
+                .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
+                .find(|p| p.exists());
+            if let Some(script) = script {
                 // Load vault env
                 let env = load_vault_env().unwrap_or_default();
                 match exec_skill_raw(&script, args, inst_dir, &env) {
@@ -310,8 +312,18 @@ fn exec_skill_raw(
     working_dir: &Path,
     env: &[(String, String)],
 ) -> Result<(i32, String, String)> {
-    let mut cmd = std::process::Command::new("bash");
-    cmd.arg(script);
+    let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("sh");
+    let mut cmd = if ext == "ts" {
+        let bun = crate::find_or_install_bun()?;
+        let mut c = std::process::Command::new(bun);
+        c.arg("run");
+        c.arg(script);
+        c
+    } else {
+        let mut c = std::process::Command::new("bash");
+        c.arg(script);
+        c
+    };
     if !args.is_empty() {
         for arg in args.split_whitespace() {
             cmd.arg(arg);
@@ -337,19 +349,30 @@ fn exec_skill(
     args: &str,
     data_dir: &str,
 ) -> Result<(i32, String, String)> {
-    let script = inst_dir
-        .join("skills")
-        .join(format!("{}.sh", skill_name));
+    let script = ["ts", "sh"].iter()
+        .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
+        .find(|p| p.exists());
 
-    if !script.exists() {
-        anyhow::bail!("skill script not found: {}", script.display());
-    }
+    let script = match script {
+        Some(s) => s,
+        None => anyhow::bail!("skill script not found: {}/skills/{}.{{ts,sh}}", inst_dir.display(), skill_name),
+    };
 
     // Load vault env
     let vault_env = load_vault_env().unwrap_or_default();
 
-    let mut cmd = std::process::Command::new("bash");
-    cmd.arg(&script);
+    let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("sh");
+    let mut cmd = if ext == "ts" {
+        let bun = crate::find_or_install_bun()?;
+        let mut c = std::process::Command::new(bun);
+        c.arg("run");
+        c.arg(&script);
+        c
+    } else {
+        let mut c = std::process::Command::new("bash");
+        c.arg(&script);
+        c
+    };
     if !args.is_empty() {
         for arg in args.split_whitespace() {
             cmd.arg(arg);

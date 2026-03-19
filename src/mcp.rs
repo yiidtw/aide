@@ -454,7 +454,7 @@ fn empty_spec() -> AgentfileSpec {
         },
         persona: None,
         skills: HashMap::new(),
-        seed: None,
+        knowledge: None,
         env: None,
         soul: None,
         expose: None,

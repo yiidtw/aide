@@ -1,12 +1,12 @@
 # Overview
 
-> **aide.sh — all your data, one trusted agent.**
+> **aide.sh — Deploy AI agents, just like Docker.**
 
 ## What is aide.sh
 
-A cross-machine agent OS. Your data is scattered across machines, accounts,
-and services. aide.sh provides one trusted agent that unifies access with
-formally verified safety guarantees.
+Deploy AI agents, just like Docker. Package agents with Agentfile,
+run them across machines, manage credentials with aide vault,
+discover them via MCP.
 
 ## The thesis
 

@@ -80,12 +80,12 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
 # Try to find local binary first (for dev), otherwise download
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if [ -f "$SCRIPT_DIR/target/release/aide" ]; then
-  AIDE="$SCRIPT_DIR/target/release/aide"
-  green "  using local binary"
-elif [ -f "$SCRIPT_DIR/target/debug/aide" ]; then
+if [ -f "$SCRIPT_DIR/target/debug/aide" ]; then
   AIDE="$SCRIPT_DIR/target/debug/aide"
   green "  using local debug binary"
+elif [ -f "$SCRIPT_DIR/target/release/aide" ]; then
+  AIDE="$SCRIPT_DIR/target/release/aide"
+  green "  using local binary"
 else
   mkdir -p "$TEST_HOME/.local/bin"
   AIDE="$TEST_HOME/.local/bin/aide"
@@ -116,13 +116,17 @@ cd "$TEST_HOME"
 AGENT_DIR="$TEST_HOME/test-agent"
 $AIDE init test-agent 2>/dev/null || true
 
-# Check new directory structure
-assert_file_exists "Agentfile.toml created" "$AGENT_DIR/Agentfile.toml"
-assert_file_exists "persona.md created" "$AGENT_DIR/persona.md"
-assert_file_exists "skills/hello.ts created" "$AGENT_DIR/skills/hello.ts"
-assert_file_exists "knowledge/ dir created" "$AGENT_DIR/knowledge"
-assert_contains "Agentfile has [knowledge] section" "cat $AGENT_DIR/Agentfile.toml" '\[knowledge\]'
-assert_contains "hello.ts is TypeScript" "cat $AGENT_DIR/skills/hello.ts" 'console.log'
+# Check new directory structure (occupation/ + cognition/ split)
+assert_file_exists "occupation/Agentfile.toml created" "$AGENT_DIR/occupation/Agentfile.toml"
+assert_file_exists "occupation/persona.md created" "$AGENT_DIR/occupation/persona.md"
+assert_file_exists "occupation/skills/hello.ts created" "$AGENT_DIR/occupation/skills/hello.ts"
+assert_file_exists "occupation/knowledge/ dir created" "$AGENT_DIR/occupation/knowledge"
+assert_file_exists "cognition/memory/ created" "$AGENT_DIR/cognition/memory"
+assert_file_exists "cognition/logs/ created" "$AGENT_DIR/cognition/logs"
+assert_file_exists ".aideignore created" "$AGENT_DIR/.aideignore"
+assert_file_exists "README.md created" "$AGENT_DIR/README.md"
+assert_contains "Agentfile has [knowledge] section" "cat $AGENT_DIR/occupation/Agentfile.toml" '\[knowledge\]'
+assert_contains "hello.ts is TypeScript" "cat $AGENT_DIR/occupation/skills/hello.ts" 'console.log'
 assert_fail "no seed/ directory (legacy)" "test -d $AGENT_DIR/seed"
 
 # ─── 3. aide build ───
@@ -147,13 +151,12 @@ cd "$TEST_HOME"
 $AIDE rm test.e2e 2>/dev/null || true
 assert_contains "aide run creates instance" "$AIDE run ci/test-agent --name test.e2e" "test.e2e"
 
-# Verify instance directory structure
+# Verify instance directory structure (occupation/ + cognition/ split)
 INST_DIR="$AIDE_HOME/instances/test.e2e"
-assert_file_exists "instance.toml exists" "$INST_DIR/instance.toml"
-assert_file_exists "memory/ created" "$INST_DIR/memory"
-assert_file_exists "knowledge/ created" "$INST_DIR/knowledge"
-assert_file_exists "logs/ created" "$INST_DIR/logs"
-assert_file_exists "skills/ copied" "$INST_DIR/skills"
+assert_file_exists "cognition/instance.toml exists" "$INST_DIR/cognition/instance.toml"
+assert_file_exists "cognition/memory/ created" "$INST_DIR/cognition/memory"
+assert_file_exists "cognition/logs/ created" "$INST_DIR/cognition/logs"
+assert_file_exists "occupation/skills/ copied" "$INST_DIR/occupation/skills"
 
 # PS
 assert_contains "ps shows instance" "$AIDE ps" "test.e2e"
@@ -177,8 +180,9 @@ assert_contains "logs show activity" "$AIDE logs test.e2e" "exec"
 echo ""
 yellow "5. TypeScript skill execution (bun auto-install)"
 
-# Create a .ts skill in the instance
-cat > "$INST_DIR/skills/greet.ts" << 'TS'
+# Create a .ts skill in the instance (in occupation/skills/)
+mkdir -p "$INST_DIR/occupation/skills"
+cat > "$INST_DIR/occupation/skills/greet.ts" << 'TS'
 // greet — test TypeScript skill
 const name = process.argv[2] || "world";
 console.log(`hello from typescript, ${name}!`);
@@ -224,8 +228,9 @@ if command -v age > /dev/null 2>&1; then
   assert_contains "vault contains TEST_KEY_B" "echo '$DECRYPTED'" "TEST_KEY_B"
 
   # Test scoped injection via Agentfile
-  # Create an Agentfile with [env] section in instance
-  cat > "$INST_DIR/Agentfile.toml" << 'TOML'
+  # Create an Agentfile with [env] section in instance (occupation/ structure)
+  mkdir -p "$INST_DIR/occupation/skills"
+  cat > "$INST_DIR/occupation/Agentfile.toml" << 'TOML'
 [agent]
 name = "test-agent"
 version = "0.1.0"
@@ -240,12 +245,12 @@ optional = ["TEST_KEY_B"]
 TOML
 
   # Create a skill that prints env
-  cat > "$INST_DIR/skills/check_env.sh" << 'SH'
+  cat > "$INST_DIR/occupation/skills/check_env.sh" << 'SH'
 #!/bin/bash
 echo "A=${TEST_KEY_A:-unset}"
 echo "B=${TEST_KEY_B:-unset}"
 SH
-  chmod +x "$INST_DIR/skills/check_env.sh"
+  chmod +x "$INST_DIR/occupation/skills/check_env.sh"
 
   # Exec with scoped env — skill declares env=["TEST_KEY_A"], so only A should be injected
   SCOPED_OUTPUT=$($AIDE exec test.e2e check_env 2>&1) || true
@@ -308,8 +313,8 @@ echo ""
 yellow "9. Instance manifest fields"
 
 # Check github_repo field can be set
-MANIFEST="$INST_DIR/instance.toml"
-assert_file_exists "instance.toml exists" "$MANIFEST"
+MANIFEST="$INST_DIR/cognition/instance.toml"
+assert_file_exists "cognition/instance.toml exists" "$MANIFEST"
 # Manually add github_repo (simulate aide deploy --github)
 if ! grep -q github_repo "$MANIFEST" 2>/dev/null; then
   echo 'github_repo = "test/aide-test"' >> "$MANIFEST"

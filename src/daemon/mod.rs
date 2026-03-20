@@ -364,21 +364,31 @@ fn cron_field_matches(field: &str, value: u32) -> bool {
     false
 }
 
+/// Find a skill script, trying occupation/skills/ first, then skills/.
+fn find_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
+    for dir in &["occupation/skills", "skills"] {
+        for ext in &["ts", "sh"] {
+            let path = inst_dir.join(dir).join(format!("{}.{}", skill_name, ext));
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 /// Execute a skill script for a cron entry.
 fn exec_cron_skill(
     inst_dir: &Path,
     skill_name: &str,
     env: &[(String, String)],
 ) -> Result<(i32, String, String)> {
-    // Try .ts first, then .sh
-    let script = ["ts", "sh"]
-        .iter()
-        .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
-        .find(|p| p.exists());
+    // Try occupation/skills/ first, then skills/ for backward compat
+    let script = find_skill_script(inst_dir, skill_name);
 
     let script = match script {
         Some(s) => s,
-        None => anyhow::bail!("skill script not found: {}/skills/{}.{{ts,sh}}", inst_dir.display(), skill_name),
+        None => anyhow::bail!("skill script not found: {}/occupation/skills/{}.{{ts,sh}}", inst_dir.display(), skill_name),
     };
 
     let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("sh");

@@ -6,6 +6,7 @@ mod dashboard;
 mod dispatch;
 mod email;
 mod expose;
+mod hub;
 mod mcp;
 mod sync;
 mod top;
@@ -135,6 +136,11 @@ enum Command {
     },
     /// Log in to the agent registry
     Login,
+    /// Manage hub sources (git-native agent registry)
+    Hub {
+        #[command(subcommand)]
+        action: HubAction,
+    },
 
     // ─── System ───
 
@@ -286,6 +292,30 @@ enum SyncTarget {
 }
 
 #[derive(Subcommand)]
+enum HubAction {
+    /// Initialize a new hub repo
+    Init {
+        /// Hub name (creates {name} repo)
+        name: String,
+        /// Create as private repo
+        #[arg(long)]
+        private: bool,
+    },
+    /// Add a hub source
+    Add {
+        /// Repository (e.g. acme-corp/aide-hub)
+        repo: String,
+    },
+    /// List configured hubs
+    Ls,
+    /// Remove a hub source
+    Rm {
+        /// Hub name to remove
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum VaultAction {
     /// Import env file into encrypted vault
     Import {
@@ -322,19 +352,16 @@ async fn main() -> Result<()> {
     // Commands that don't require aide.toml
     match &cli.command {
         Command::Build { path, tag: _ } => return cmd_build(path),
-        Command::Push { image, private } => {
-            if *private {
-                println!("Private push coming soon. For now, use public push.");
-                return Ok(());
-            }
-            return cmd_push(image).await;
+        Command::Push { image, private: _ } => {
+            return cmd_push(image);
         }
         Command::Pull { image } => {
-            let (agent_ref, version) = parse_image_ref(image);
-            return cmd_pull(&agent_ref, &version).await;
+            let (agent_ref, _version) = parse_image_ref(image);
+            return cmd_pull(&agent_ref);
         }
         Command::Login => return cmd_login().await,
-        Command::Search { query } => return cmd_search(query).await,
+        Command::Hub { action } => return cmd_hub(action),
+        Command::Search { query } => return cmd_search(query),
         Command::Images => return cmd_images(),
         Command::Init { name } => return cmd_init(name),
         Command::Lint { path } => return cmd_lint(path),
@@ -509,6 +536,7 @@ async fn main() -> Result<()> {
         | Command::Push { .. }
         | Command::Pull { .. }
         | Command::Login
+        | Command::Hub { .. }
         | Command::Search { .. }
         | Command::Init { .. }
         | Command::Lint { .. }
@@ -700,20 +728,26 @@ fn cmd_run_from_pulled(
     let manifest = mgr.spawn(agent_type, &instance_name, &def)?;
     mgr.append_log(&instance_name, &format!("created from image '{}'", image))?;
 
-    // Copy Agentfile.toml into instance (image manifest travels with container)
+    // Copy type files into occupation/ (image manifest travels with container)
     let inst_dir = mgr.base_dir().join(&instance_name);
-    let agentfile_src = types_dir.join("Agentfile.toml");
+    let occ_dir = inst_dir.join("occupation");
+    std::fs::create_dir_all(&occ_dir)?;
+
+    // Resolve types_dir base (may have occupation/ subdir from new-format types)
+    let types_base = AgentfileSpec::base_dir(&types_dir);
+
+    let agentfile_src = types_base.join("Agentfile.toml");
     if agentfile_src.exists() {
-        std::fs::copy(&agentfile_src, inst_dir.join("Agentfile.toml"))?;
+        std::fs::copy(&agentfile_src, occ_dir.join("Agentfile.toml"))?;
     }
 
-    // Copy skill files
-    let skills_dir = inst_dir.join("skills");
+    // Copy skill files into occupation/skills/
+    let skills_dir = occ_dir.join("skills");
     std::fs::create_dir_all(&skills_dir)?;
 
     for (skill_name, skill_def) in &spec.skills {
         if let Some(script) = &skill_def.script {
-            let src = types_dir.join(script);
+            let src = types_base.join(script);
             if src.exists() {
                 let dst = skills_dir.join(
                     Path::new(script)
@@ -724,7 +758,7 @@ fn cmd_run_from_pulled(
             }
         }
         if let Some(prompt) = &skill_def.prompt {
-            let src = types_dir.join(prompt);
+            let src = types_base.join(prompt);
             if src.exists() {
                 let dst = skills_dir.join(
                     Path::new(prompt)
@@ -739,14 +773,18 @@ fn cmd_run_from_pulled(
         }
     }
 
-    // Copy knowledge data
+    // Copy knowledge data into occupation/knowledge/
     if let Some(knowledge) = &spec.knowledge {
-        let knowledge_src = types_dir.join(&knowledge.dir);
+        let knowledge_src = types_base.join(&knowledge.dir);
         if knowledge_src.exists() {
-            let knowledge_dst = inst_dir.join("knowledge");
+            let knowledge_dst = occ_dir.join("knowledge");
             copy_dir_recursive(&knowledge_src, &knowledge_dst)?;
         }
     }
+
+    // Ensure cognition/ dirs exist
+    std::fs::create_dir_all(inst_dir.join("cognition/memory"))?;
+    std::fs::create_dir_all(inst_dir.join("cognition/logs"))?;
 
     println!("{}", manifest.name);
     Ok(())
@@ -835,8 +873,9 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
 
     let inst_dir = mgr.base_dir().join(instance);
 
-    // Read persona
-    let persona = std::fs::read_to_string(inst_dir.join("persona.md")).unwrap_or_default();
+    // Read persona (try occupation/persona.md first, fall back to persona.md)
+    let persona_path = agents::instance::resolve_path(&inst_dir, "occupation/persona.md", "persona.md");
+    let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
 
     // Read skill catalog from Agentfile
     let skill_info = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
@@ -1006,9 +1045,10 @@ fn cmd_inspect(mgr: &InstanceManager, instance: &str) -> Result<()> {
             "Domains": manifest.domains,
         },
         "Mounts": {
-            "Memory": inst_dir.join("memory").display().to_string(),
-            "Logs": inst_dir.join("logs").display().to_string(),
-            "Skills": inst_dir.join("skills").display().to_string(),
+            "Memory": agents::instance::resolve_path(&inst_dir, "cognition/memory", "memory").display().to_string(),
+            "Logs": agents::instance::resolve_path(&inst_dir, "cognition/logs", "logs").display().to_string(),
+            "Skills": agents::instance::resolve_path(&inst_dir, "occupation/skills", "skills").display().to_string(),
+            "Persona": agents::instance::resolve_path(&inst_dir, "occupation/persona.md", "persona.md").display().to_string(),
         },
         "Cron": manifest.cron.iter().map(|c| {
             serde_json::json!({
@@ -1019,7 +1059,7 @@ fn cmd_inspect(mgr: &InstanceManager, instance: &str) -> Result<()> {
         }).collect::<Vec<_>>(),
         "Env": {
             "Scoped": load_scoped_env(&inst_dir, None).map(|e| e.len()).unwrap_or(0),
-            "AgentfilePresent": inst_dir.join("Agentfile.toml").exists(),
+            "AgentfilePresent": inst_dir.join("occupation/Agentfile.toml").exists() || inst_dir.join("Agentfile.toml").exists(),
         },
     });
 
@@ -1093,8 +1133,13 @@ fn cmd_info(config: &AideConfig, mgr: &InstanceManager) -> Result<()> {
         println!("Vault: not configured");
     }
 
-    // Registry
-    println!("Registry: https://hub.aide.sh");
+    // Hubs
+    let hubs = hub::load_hubs();
+    if hubs.is_empty() {
+        println!("Hubs: none configured");
+    } else {
+        println!("Hubs: {}", hubs.iter().map(|h| h.repo.as_str()).collect::<Vec<_>>().join(", "));
+    }
 
     println!();
     println!("Instances:");
@@ -1155,12 +1200,17 @@ fn cmd_unmount(mgr: &InstanceManager, instance: &str, target: &str) -> Result<()
 
 /// Resolve the skill script path, checking .sh and .ts extensions.
 fn resolve_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
-    let skills_dir = inst_dir.join("skills");
-    // Try .ts first (preferred), then .sh (legacy)
-    for ext in &["ts", "sh"] {
-        let path = skills_dir.join(format!("{}.{}", skill_name, ext));
-        if path.exists() {
-            return Some(path);
+    // Try occupation/skills/ first, then root skills/ for backward compat
+    let skills_dirs = [
+        inst_dir.join("occupation/skills"),
+        inst_dir.join("skills"),
+    ];
+    for skills_dir in &skills_dirs {
+        for ext in &["ts", "sh"] {
+            let path = skills_dir.join(format!("{}.{}", skill_name, ext));
+            if path.exists() {
+                return Some(path);
+            }
         }
     }
     None
@@ -1318,8 +1368,10 @@ fn load_scoped_env(inst_dir: &Path, skill_name: Option<&str>) -> Result<Vec<(Str
         return Ok(Vec::new());
     }
 
-    let agentfile = inst_dir.join("Agentfile.toml");
-    if !agentfile.exists() {
+    // Check for Agentfile.toml (new: occupation/, old: root)
+    let new_agentfile = inst_dir.join("occupation/Agentfile.toml");
+    let old_agentfile = inst_dir.join("Agentfile.toml");
+    if !new_agentfile.exists() && !old_agentfile.exists() {
         return Ok(all_env); // Legacy: no Agentfile = inject all
     }
 
@@ -1644,12 +1696,16 @@ fn cmd_init(name: &str) -> Result<()> {
     }
     agents::scaffold::init_agent(name, dir)?;
     println!("created {}/", name);
-    println!("  Agentfile.toml");
-    println!("  persona.md");
-    println!("  skills/hello.ts");
-    println!("  knowledge/");
+    println!("  occupation/Agentfile.toml");
+    println!("  occupation/persona.md");
+    println!("  occupation/skills/hello.ts");
+    println!("  occupation/knowledge/");
+    println!("  cognition/memory/");
+    println!("  cognition/logs/");
+    println!("  .aideignore");
+    println!("  README.md");
     println!();
-    println!("next: edit Agentfile.toml, then `aide.sh build {}/`", name);
+    println!("next: edit occupation/Agentfile.toml, then `aide.sh build {}/`", name);
     Ok(())
 }
 
@@ -1689,8 +1745,9 @@ fn cmd_build(dir: &Path) -> Result<()> {
         println!("  warn: {}", w);
     }
 
-    // Scan for credential leaks before building
-    let leaks = scan_for_leaks(&dir)?;
+    // Scan for credential leaks before building (only scan occupation/ if it exists)
+    let scan_dir = AgentfileSpec::base_dir(&dir);
+    let leaks = scan_for_leaks(&scan_dir)?;
     if !leaks.is_empty() {
         eprintln!("BLOCKED: potential secrets detected in agent files:");
         for leak in &leaks {
@@ -1742,140 +1799,68 @@ fn cmd_build(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_push(dir: &Path) -> Result<()> {
+fn cmd_push(dir: &Path) -> Result<()> {
     let dir = std::fs::canonicalize(dir)
         .with_context(|| format!("directory not found: {}", dir.display()))?;
 
     let spec = AgentfileSpec::load(&dir)?;
 
-    let auth_path = aide_home().join("auth.json");
-    if !auth_path.exists() {
-        bail!("not authenticated. Run `aide.sh login` first.");
-    }
-    let auth_content = std::fs::read_to_string(&auth_path)?;
-    let auth: serde_json::Value = serde_json::from_str(&auth_content)
-        .context("failed to parse ~/.aide/auth.json")?;
-    let token = auth.get("token").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no token in ~/.aide/auth.json"))?;
-    let username = auth.get("username").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("no username in ~/.aide/auth.json"))?;
-
-    let archive_name = spec.archive_name();
-    let archive_path = aide_home().join("builds").join(&archive_name);
-    if !archive_path.exists() {
-        cmd_build(&dir)?;
+    // Scan for credential leaks before push
+    let leaks = scan_for_leaks(&dir)?;
+    if !leaks.is_empty() {
+        eprintln!("BLOCKED: potential secrets detected:");
+        for leak in &leaks {
+            eprintln!("  {}", leak);
+        }
+        bail!("Fix leaks before pushing.");
     }
 
-    let archive_bytes = std::fs::read(&archive_path)
-        .with_context(|| format!("failed to read {}", archive_path.display()))?;
+    // Determine target hub (default hub)
+    let hubs = hub::load_hubs();
+    let target_hub = hubs.iter()
+        .find(|h| h.default)
+        .or(hubs.first())
+        .ok_or_else(|| anyhow::anyhow!("no hubs configured. Run: aide hub add <owner/repo>"))?;
 
-    println!("pushing {}/{}:{}", username, spec.agent.name, spec.agent.version);
+    println!("pushing {} → {}", spec.agent.name, target_hub.repo);
 
-    let url = format!("https://hub.aide.sh/v1/{}/{}", username, spec.agent.name);
+    hub::push_to_hub(&spec.agent.name, &dir, &target_hub.repo)?;
 
-    let part = reqwest::multipart::Part::bytes(archive_bytes)
-        .file_name(archive_name.clone())
-        .mime_str("application/gzip")?;
-    let metadata = serde_json::json!({
-        "name": spec.agent.name,
-        "version": spec.agent.version,
-        "description": spec.agent.description,
-        "author": spec.agent.author,
-        "skills": spec.skills.keys().collect::<Vec<_>>(),
-    });
-    let metadata_part = reqwest::multipart::Part::text(metadata.to_string())
-        .mime_str("application/json")?;
-    let form = reqwest::multipart::Form::new()
-        .part("archive", part)
-        .part("metadata", metadata_part);
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .multipart(form)
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            println!("{}/{}:{}", username, spec.agent.name, spec.agent.version);
-        }
-        Ok(r) => {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            bail!("push failed ({}): {}", status, body);
-        }
-        Err(e) => {
-            println!("push request failed: {}", e);
-            println!("(registry at {} not yet available)", url);
-        }
-    }
-
+    println!("{}:{} pushed to {}", spec.agent.name, spec.agent.version, target_hub.repo);
     Ok(())
 }
 
-async fn cmd_pull(agent_ref: &str, version: &str) -> Result<()> {
-    use flate2::read::GzDecoder;
+fn cmd_pull(agent_ref: &str) -> Result<()> {
+    // agent_ref can be:
+    //   "agent-name"       → pull from default hub
+    //   "user/agent-name"  → pull from hub owned by user (search all hubs)
 
-    let parts: Vec<&str> = agent_ref.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        bail!("invalid image '{}' — expected <user>/<type>", agent_ref);
-    }
-    let (user, agent_type) = (parts[0], parts[1]);
-
-    // Pull from GitHub Releases: github.com/<user>/aide-agents/releases/download/<type>/<type>.tar.gz
-    // Or from aide registry repo: github.com/yiidtw/aide/releases (for aide/* agents)
-    let url = if user == "aide" {
-        format!(
-            "https://github.com/yiidtw/aide/releases/download/agents/{}-{}.tar.gz",
-            agent_type, version
-        )
+    let (hub_repo, agent_name) = if agent_ref.contains('/') {
+        let parts: Vec<&str> = agent_ref.splitn(2, '/').collect();
+        // Check if user/agent matches a specific hub owner
+        let hubs = hub::load_hubs();
+        let hub = hubs.iter()
+            .find(|h| h.repo.starts_with(parts[0]))
+            .or(hubs.first())
+            .ok_or_else(|| anyhow::anyhow!("no hubs configured. Run: aide hub add <owner/repo>"))?;
+        (hub.repo.clone(), parts[1].to_string())
     } else {
-        format!(
-            "https://github.com/{}/aide-agents/releases/download/{}/{}-{}.tar.gz",
-            user, agent_type, agent_type, version
-        )
+        let hubs = hub::load_hubs();
+        let hub = hubs.iter()
+            .find(|h| h.default)
+            .or(hubs.first())
+            .ok_or_else(|| anyhow::anyhow!("no hubs configured. Run: aide hub add <owner/repo>"))?;
+        (hub.repo.clone(), agent_ref.to_string())
     };
 
-    println!("pulling {}:{}...", agent_ref, version);
+    println!("pulling {} from {}...", agent_name, hub_repo);
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
-    let resp = client.get(&url).send().await;
-
-    let archive_bytes = match resp {
-        Ok(r) if r.status().is_success() => r.bytes().await?.to_vec(),
-        Ok(r) => {
-            let status = r.status();
-            bail!(
-                "pull failed ({})\nAgent not found at: {}\n\nTo install locally instead:\n  git clone <repo> && cp -r agent/ ~/.aide/types/{}/{}/\nFor private agents: aide login first, then aide pull --private",
-                status, url, user, agent_type
-            );
-        }
-        Err(e) => {
-            bail!(
-                "failed to reach registry: {}\n\nTo install locally:\n  cp -r <agent-dir>/ ~/.aide/types/{}/{}/",
-                e, user, agent_type
-            );
-        }
-    };
-
-    let types_dir = aide_home().join("types").join(user).join(agent_type);
-    if types_dir.exists() {
-        std::fs::remove_dir_all(&types_dir)?;
-    }
-    std::fs::create_dir_all(&types_dir)?;
-
-    let decoder = GzDecoder::new(&archive_bytes[..]);
-    let mut archive = tar::Archive::new(decoder);
-    archive.unpack(&types_dir)?;
+    let types_dir = hub::pull_from_hub(&agent_name, &hub_repo)?;
 
     if let Ok(spec) = AgentfileSpec::load(&types_dir) {
-        println!("{}:{}", agent_ref, spec.agent.version);
+        println!("{}:{}", agent_name, spec.agent.version);
     } else {
-        println!("{}", agent_ref);
+        println!("{}", agent_name);
     }
 
     Ok(())
@@ -1985,48 +1970,87 @@ async fn cmd_login() -> Result<()> {
     }
 }
 
-async fn cmd_search(query: &str) -> Result<()> {
-    let url = format!("https://hub.aide.sh/v1/search?q={}", urlencoded(query));
+fn cmd_search(query: &str) -> Result<()> {
+    let hubs = hub::load_hubs();
+    if hubs.is_empty() {
+        bail!("no hubs configured. Run: aide hub add <owner/repo>");
+    }
 
-    let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await;
+    let mut any_results = false;
 
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            let results: serde_json::Value = r.json().await?;
-            if let Some(agents) = results.get("agents").and_then(|v| v.as_array()) {
-                if agents.is_empty() {
-                    println!("no results for '{}'", query);
-                    return Ok(());
+    for h in &hubs {
+        match hub::search_hub(query, &h.repo) {
+            Ok(results) => {
+                if results.is_empty() {
+                    continue;
                 }
-
-                println!(
-                    "{:<24} {:<10} {:<12} {}",
-                    "NAME", "VERSION", "AUTHOR", "DESCRIPTION"
-                );
-                println!("{}", "─".repeat(72));
-
-                for agent in agents {
+                if !any_results {
                     println!(
                         "{:<24} {:<10} {:<12} {}",
-                        agent["name"].as_str().unwrap_or("?"),
-                        agent["version"].as_str().unwrap_or("?"),
-                        agent["author"].as_str().unwrap_or("?"),
-                        agent["description"].as_str().unwrap_or(""),
+                        "NAME", "VERSION", "AUTHOR", "DESCRIPTION"
+                    );
+                    println!("{}", "\u{2500}".repeat(72));
+                }
+                for agent in &results {
+                    println!(
+                        "{:<24} {:<10} {:<12} {}",
+                        agent.name,
+                        agent.version,
+                        agent.author,
+                        agent.description,
                     );
                 }
+                any_results = true;
             }
-        }
-        Ok(r) => {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            bail!("search failed ({}): {}", status, body);
-        }
-        Err(e) => {
-            bail!("failed to reach registry: {}", e);
+            Err(e) => {
+                eprintln!("warning: failed to search hub '{}': {}", h.name, e);
+            }
         }
     }
 
+    if !any_results {
+        println!("no results for '{}'", query);
+    }
+
+    Ok(())
+}
+
+fn cmd_hub(action: &HubAction) -> Result<()> {
+    match action {
+        HubAction::Init { name, private } => {
+            let visibility = if *private { "private" } else { "public" };
+            println!("initializing hub repo '{}'...", name);
+            hub::init_hub(name, visibility)?;
+            println!("hub '{}' created ({})", name, visibility);
+            println!();
+            println!("add it as a source:");
+            println!("  aide hub add {}", name);
+        }
+        HubAction::Add { repo } => {
+            hub::add_hub(repo)?;
+            println!("hub added: {}", repo);
+        }
+        HubAction::Ls => {
+            let hubs = hub::load_hubs();
+            if hubs.is_empty() {
+                println!("no hubs configured. Run: aide hub add <owner/repo>");
+                return Ok(());
+            }
+            println!("{:<16} {:<30} {}", "NAME", "REPO", "DEFAULT");
+            println!("{}", "\u{2500}".repeat(52));
+            for h in &hubs {
+                let default_marker = if h.default { "*" } else { "" };
+                println!("{:<16} {:<30} {}", h.name, h.repo, default_marker);
+            }
+        }
+        HubAction::Rm { name } => {
+            if hub::remove_hub(name)? {
+                println!("hub '{}' removed", name);
+            } else {
+                println!("hub '{}' not found", name);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2144,17 +2168,6 @@ fn cmd_cost(data_dir: &str) -> Result<()> {
     Ok(())
 }
 
-fn urlencoded(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                String::from(b as char)
-            }
-            b' ' => "+".to_string(),
-            _ => format!("%{:02X}", b),
-        })
-        .collect()
-}
 
 fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()> {
     let mgr = InstanceManager::new(data_dir);
@@ -2201,11 +2214,31 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     }
     std::fs::create_dir_all(&tmp_dir)?;
 
-    // Copy agent files (skip logs/ to keep repo clean)
+    // Copy agent files: deploy both occupation/ and cognition/, skip cognition/logs/
     for entry in std::fs::read_dir(&inst_dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
+        // Skip old-style logs/ and new-style cognition/logs/
         if name == "logs" {
+            continue;
+        }
+        if name == "cognition" && entry.path().is_dir() {
+            // Copy cognition/ but skip logs/
+            let cog_dst = tmp_dir.join("cognition");
+            std::fs::create_dir_all(&cog_dst)?;
+            for cog_entry in std::fs::read_dir(entry.path())? {
+                let cog_entry = cog_entry?;
+                let cog_name = cog_entry.file_name().to_string_lossy().to_string();
+                if cog_name == "logs" {
+                    continue;
+                }
+                let dst = cog_dst.join(&cog_name);
+                if cog_entry.path().is_dir() {
+                    copy_dir_recursive(&cog_entry.path(), &dst)?;
+                } else {
+                    std::fs::copy(cog_entry.path(), &dst)?;
+                }
+            }
             continue;
         }
         let dst = tmp_dir.join(&name);
@@ -2216,19 +2249,20 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         }
     }
 
-    // Ensure memory/ and knowledge/ dirs exist
-    std::fs::create_dir_all(tmp_dir.join("memory"))?;
-    std::fs::write(tmp_dir.join("memory/.gitkeep"), "")?;
-    std::fs::create_dir_all(tmp_dir.join("knowledge"))?;
-    if !tmp_dir.join("knowledge/.gitkeep").exists() {
-        std::fs::write(tmp_dir.join("knowledge/.gitkeep"), "")?;
+    // Ensure cognition/memory/ exists with .gitkeep
+    std::fs::create_dir_all(tmp_dir.join("cognition/memory"))?;
+    std::fs::write(tmp_dir.join("cognition/memory/.gitkeep"), "")?;
+    // Ensure occupation/knowledge/ exists
+    std::fs::create_dir_all(tmp_dir.join("occupation/knowledge"))?;
+    if !tmp_dir.join("occupation/knowledge/.gitkeep").exists() {
+        std::fs::write(tmp_dir.join("occupation/knowledge/.gitkeep"), "")?;
     }
 
-    // Create README pointing to persona.md
+    // Create README pointing to occupation/persona.md
     let readme = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
         let desc = spec.agent.description.as_deref().unwrap_or("An aide.sh agent");
         let persona_note = if spec.persona.is_some() {
-            "\n\nSee [persona.md](persona.md) for agent personality and behavior.\n"
+            "\n\nSee [occupation/persona.md](occupation/persona.md) for agent personality and behavior.\n"
         } else {
             "\n"
         };
@@ -2264,11 +2298,13 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     // Cleanup
     std::fs::remove_dir_all(&tmp_dir)?;
 
-    // Write github_repo back to instance.toml
+    // Write github_repo back to instance.toml (uses save_manifest which handles new/old path)
     let github_repo_ref = format!("{}/{}", username, repo_name);
     if let Ok(Some(mut manifest)) = mgr.get(instance) {
         manifest.github_repo = Some(github_repo_ref.clone());
-        let manifest_path = mgr.base_dir().join(instance).join("instance.toml");
+        // Use resolve_path for backward compat
+        let inst_path = mgr.base_dir().join(instance);
+        let manifest_path = agents::instance::resolve_path(&inst_path, "cognition/instance.toml", "instance.toml");
         let content = toml::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, content)?;
     }

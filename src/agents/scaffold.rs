@@ -10,12 +10,19 @@ use std::path::Path;
 ///
 /// ```text
 /// <name>/
-///   Agentfile.toml    # manifest with [agent], [persona], [skills.hello], [knowledge], [env]
-///   persona.md        # starter persona with TODOs
-///   skills/
-///     hello.ts        # example TypeScript skill (runs via bun)
-///   knowledge/
-///     .gitkeep        # placeholder so the directory is tracked by git
+///   occupation/          # shareable job definition
+///     Agentfile.toml     # manifest with [agent], [persona], [skills.hello], [knowledge], [env]
+///     persona.md         # starter persona with TODOs
+///     skills/
+///       hello.ts         # example TypeScript skill (runs via bun)
+///     knowledge/
+///       .gitkeep         # placeholder so the directory is tracked by git
+///   cognition/           # instance-specific brain
+///     memory/
+///       .gitkeep
+///     logs/              # empty dir
+///   .aideignore          # cognition/
+///   README.md
 /// ```
 ///
 /// The generated `Agentfile.toml` includes commented-out examples of
@@ -31,10 +38,12 @@ pub fn init_agent(name: &str, dir: &Path) -> Result<()> {
     }
 
     // Create directory structure
-    fs::create_dir_all(dir.join("skills"))?;
-    fs::create_dir_all(dir.join("knowledge"))?;
+    fs::create_dir_all(dir.join("occupation/skills"))?;
+    fs::create_dir_all(dir.join("occupation/knowledge"))?;
+    fs::create_dir_all(dir.join("cognition/memory"))?;
+    fs::create_dir_all(dir.join("cognition/logs"))?;
 
-    // Agentfile.toml
+    // occupation/Agentfile.toml
     let agentfile = format!(
         r#"[agent]
 name = "{name}"
@@ -65,9 +74,9 @@ max_tokens = 4096
 max_retry = 3
 "#
     );
-    fs::write(dir.join("Agentfile.toml"), agentfile)?;
+    fs::write(dir.join("occupation/Agentfile.toml"), agentfile)?;
 
-    // persona.md
+    // occupation/persona.md
     let persona = format!(
         r#"# {name}
 
@@ -81,9 +90,9 @@ TODO: describe what this agent does
 - TODO: add behavioral guidelines
 "#
     );
-    fs::write(dir.join("persona.md"), persona)?;
+    fs::write(dir.join("occupation/persona.md"), persona)?;
 
-    // skills/hello.ts
+    // occupation/skills/hello.ts
     let hello = format!(
         r#"// hello — a greeting skill
 // usage: hello [name]
@@ -91,12 +100,34 @@ const name = process.argv[2] || "world";
 console.log(`Hello, ${{name}}! I'm your aide agent.`);
 "#
     );
-    let hello_path = dir.join("skills/hello.ts");
+    let hello_path = dir.join("occupation/skills/hello.ts");
     fs::write(&hello_path, hello)?;
     fs::set_permissions(&hello_path, fs::Permissions::from_mode(0o755))?;
 
-    // knowledge/.gitkeep
-    fs::write(dir.join("knowledge/.gitkeep"), "")?;
+    // occupation/knowledge/.gitkeep
+    fs::write(dir.join("occupation/knowledge/.gitkeep"), "")?;
+
+    // cognition/memory/.gitkeep
+    fs::write(dir.join("cognition/memory/.gitkeep"), "")?;
+
+    // .aideignore
+    fs::write(dir.join(".aideignore"), "cognition/\n")?;
+
+    // README.md
+    let readme = format!(
+        r#"# {name}
+
+An aide.sh agent.
+
+## Structure
+
+- `occupation/` — shareable job definition (Agentfile, persona, skills, knowledge)
+- `cognition/` — instance-specific brain (memory, logs)
+
+Powered by [aide.sh](https://aide.sh) — Deploy AI agents, just like Docker.
+"#
+    );
+    fs::write(dir.join("README.md"), readme)?;
 
     Ok(())
 }

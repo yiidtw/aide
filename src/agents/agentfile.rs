@@ -364,7 +364,9 @@ impl AgentfileSpec {
     /// - Returns an error if the TOML is malformed or missing required fields
     ///   (`agent.name`, `agent.version`).
     pub fn load(dir: &Path) -> Result<Self> {
-        let path = dir.join("Agentfile.toml");
+        // Try occupation/Agentfile.toml first, fall back to root Agentfile.toml
+        let new_path = dir.join("occupation/Agentfile.toml");
+        let path = if new_path.exists() { new_path } else { dir.join("Agentfile.toml") };
         if !path.exists() {
             bail!("Agentfile.toml not found in {}", dir.display());
         }
@@ -373,6 +375,14 @@ impl AgentfileSpec {
         let spec: AgentfileSpec = toml::from_str(&content)
             .with_context(|| format!("failed to parse {}", path.display()))?;
         Ok(spec)
+    }
+
+    /// Returns the base directory where Agentfile.toml lives.
+    /// If `occupation/Agentfile.toml` exists, returns `dir/occupation/`,
+    /// otherwise returns `dir` itself (backward compat).
+    pub fn base_dir(dir: &Path) -> PathBuf {
+        let new_path = dir.join("occupation/Agentfile.toml");
+        if new_path.exists() { dir.join("occupation") } else { dir.to_path_buf() }
     }
 
     /// Validate that all referenced files exist relative to the given directory.
@@ -390,10 +400,12 @@ impl AgentfileSpec {
     /// and prompt specified). Fatal problems cause an `Err` return.
     pub fn validate(&self, dir: &Path) -> Result<Vec<String>> {
         let mut warnings = Vec::new();
+        // Resolve paths relative to where Agentfile.toml lives
+        let base = Self::base_dir(dir);
 
         // Check persona file
         if let Some(persona) = &self.persona {
-            let persona_path = dir.join(&persona.file);
+            let persona_path = base.join(&persona.file);
             if !persona_path.exists() {
                 bail!(
                     "persona file not found: {} (expected at {})",
@@ -418,7 +430,7 @@ impl AgentfileSpec {
                 ));
             }
             if let Some(script) = &skill.script {
-                let script_path = dir.join(script);
+                let script_path = base.join(script);
                 if !script_path.exists() {
                     bail!(
                         "skill '{}' script not found: {} (expected at {})",
@@ -429,7 +441,7 @@ impl AgentfileSpec {
                 }
             }
             if let Some(prompt) = &skill.prompt {
-                let prompt_path = dir.join(prompt);
+                let prompt_path = base.join(prompt);
                 if !prompt_path.exists() {
                     bail!(
                         "skill '{}' prompt not found: {} (expected at {})",
@@ -443,7 +455,7 @@ impl AgentfileSpec {
 
         // Check knowledge dir
         if let Some(knowledge) = &self.knowledge {
-            let knowledge_path = dir.join(&knowledge.dir);
+            let knowledge_path = base.join(&knowledge.dir);
             if !knowledge_path.exists() {
                 warnings.push(format!(
                     "knowledge directory not found: {} — will be ignored",
@@ -541,28 +553,30 @@ impl AgentfileSpec {
     /// all referenced files actually exist.
     pub fn collect_files(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
+        // Resolve paths relative to where Agentfile.toml lives
+        let base = Self::base_dir(dir);
 
         // Always include Agentfile.toml
-        files.push(dir.join("Agentfile.toml"));
+        files.push(base.join("Agentfile.toml"));
 
         // Persona
         if let Some(persona) = &self.persona {
-            files.push(dir.join(&persona.file));
+            files.push(base.join(&persona.file));
         }
 
         // Skill files
         for skill in self.skills.values() {
             if let Some(script) = &skill.script {
-                files.push(dir.join(script));
+                files.push(base.join(script));
             }
             if let Some(prompt) = &skill.prompt {
-                files.push(dir.join(prompt));
+                files.push(base.join(prompt));
             }
         }
 
         // Knowledge directory — collect all files recursively
         if let Some(knowledge) = &self.knowledge {
-            let knowledge_path = dir.join(&knowledge.dir);
+            let knowledge_path = base.join(&knowledge.dir);
             if knowledge_path.exists() {
                 collect_dir_recursive(&knowledge_path, &mut files)?;
             }

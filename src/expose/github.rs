@@ -418,7 +418,9 @@ fn exec_agent(
     inst_dir: &std::path::Path,
     query: &str,
 ) -> Result<String> {
-    let persona = std::fs::read_to_string(inst_dir.join("persona.md")).unwrap_or_default();
+    // Read persona (try occupation/persona.md first, fall back to persona.md)
+    let persona_path = crate::agents::instance::resolve_path(inst_dir, "occupation/persona.md", "persona.md");
+    let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
     let skill_info = AgentfileSpec::load(inst_dir)
         .ok()
         .map(|spec| spec.format_help(instance))
@@ -464,9 +466,8 @@ fn exec_agent(
             let skill_name = parts[0];
             let args = if parts.len() > 1 { parts[1] } else { "" };
 
-            let script = ["ts", "sh"].iter()
-                .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
-                .find(|p| p.exists());
+            // Try occupation/skills/ first, then skills/ for backward compat
+            let script = find_skill_script(inst_dir, skill_name);
             if let Some(script) = script {
                 match exec_skill_raw(&script, args, inst_dir, &vault_env) {
                     Ok((_, stdout, stderr)) => {
@@ -522,6 +523,19 @@ fn exec_skill_raw(
     ))
 }
 
+/// Find a skill script, trying occupation/skills/ first, then skills/.
+fn find_skill_script(inst_dir: &std::path::Path, skill_name: &str) -> Option<std::path::PathBuf> {
+    for dir in &["occupation/skills", "skills"] {
+        for ext in &["ts", "sh"] {
+            let path = inst_dir.join(dir).join(format!("{}.{}", skill_name, ext));
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 fn load_vault_env() -> Result<Vec<(String, String)>> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let aide_home = PathBuf::from(&home).join(".aide");
@@ -567,7 +581,8 @@ async fn commit_memory(
 ) -> Result<()> {
     use base64::Engine;
 
-    let memory_dir = inst_dir.join("memory");
+    // Try cognition/memory/ first, fall back to memory/
+    let memory_dir = crate::agents::instance::resolve_path(inst_dir, "cognition/memory", "memory");
     if !memory_dir.exists() {
         return Ok(());
     }
@@ -582,8 +597,15 @@ async fn commit_memory(
 
     info!(repo = %repo, files = files_to_commit.len(), "committing memory changes");
 
+    // Determine the repo path prefix based on the memory_dir location
+    let memory_prefix = if memory_dir.to_string_lossy().contains("cognition/memory") {
+        "cognition/memory"
+    } else {
+        "memory"
+    };
+
     for (rel_path, content) in &files_to_commit {
-        let api_path = format!("memory/{}", rel_path);
+        let api_path = format!("{}/{}", memory_prefix, rel_path);
         let url = format!("{}/repos/{}/contents/{}", GITHUB_API, repo, api_path);
 
         // Get SHA if file already exists (needed for update)

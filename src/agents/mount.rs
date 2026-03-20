@@ -13,8 +13,8 @@ fn gather_instance_content(instance_dir: &Path, instance_name: &str) -> Result<S
         instance_name
     ));
 
-    // Instance metadata from instance.toml
-    let manifest_path = instance_dir.join("instance.toml");
+    // Instance metadata from instance.toml (try cognition/ first, fall back to root)
+    let manifest_path = super::instance::resolve_path(instance_dir, "cognition/instance.toml", "instance.toml");
     if manifest_path.exists() {
         let raw = fs::read_to_string(&manifest_path)?;
         if let Ok(manifest) = toml::from_str::<toml::Value>(&raw) {
@@ -43,8 +43,8 @@ fn gather_instance_content(instance_dir: &Path, instance_name: &str) -> Result<S
         }
     }
 
-    // Persona
-    let persona_path = instance_dir.join("persona.md");
+    // Persona (try occupation/persona.md first, fall back to root)
+    let persona_path = super::instance::resolve_path(instance_dir, "occupation/persona.md", "persona.md");
     if persona_path.exists() {
         let content = fs::read_to_string(&persona_path)?;
         if !content.trim().is_empty() {
@@ -52,10 +52,13 @@ fn gather_instance_content(instance_dir: &Path, instance_name: &str) -> Result<S
         }
     }
 
-    // Knowledge files (check knowledge/ first, fall back to legacy seed/)
+    // Knowledge files (check occupation/knowledge/ first, then knowledge/, fall back to legacy seed/)
+    let occ_knowledge_dir = instance_dir.join("occupation/knowledge");
     let knowledge_dir = instance_dir.join("knowledge");
     let legacy_seed_dir = instance_dir.join("seed");
-    let kb_dir = if knowledge_dir.is_dir() { &knowledge_dir } else { &legacy_seed_dir };
+    let kb_dir = if occ_knowledge_dir.is_dir() { &occ_knowledge_dir }
+        else if knowledge_dir.is_dir() { &knowledge_dir }
+        else { &legacy_seed_dir };
     if kb_dir.is_dir() {
         let mut kb_files = collect_md_files(kb_dir)?;
         kb_files.sort();
@@ -72,8 +75,8 @@ fn gather_instance_content(instance_dir: &Path, instance_name: &str) -> Result<S
         }
     }
 
-    // Memory files
-    let memory_dir = instance_dir.join("memory");
+    // Memory files (try cognition/memory/ first, fall back to memory/)
+    let memory_dir = super::instance::resolve_path(instance_dir, "cognition/memory", "memory");
     if memory_dir.is_dir() {
         let mut mem_files = collect_md_files(&memory_dir)?;
         mem_files.sort();

@@ -8,7 +8,7 @@ use crate::config::AgentDef;
 
 /// Persistent instance state stored on disk.
 ///
-/// Each instance lives at `~/.aide/instances/<name>/instance.toml`.
+/// Each instance lives at `~/.aide/instances/<name>/cognition/instance.toml`.
 /// This manifest captures the instance's identity, its parent agent type,
 /// and any scheduled cron entries. It is created by [`InstanceManager::spawn()`]
 /// and updated whenever cron entries are added or removed.
@@ -17,11 +17,15 @@ use crate::config::AgentDef;
 ///
 /// ```text
 /// ~/.aide/instances/<name>/
-///   instance.toml   # this manifest
-///   persona.md      # copied from agent type definition
-///   memory/         # persistent memory across runs
-///   knowledge/      # knowledge files (from agent image)
-///   logs/           # daily log files (YYYY-MM-DD.log)
+///   occupation/          # shareable job definition
+///     Agentfile.toml     # agent manifest
+///     persona.md         # copied from agent type definition
+///     skills/            # skill scripts
+///     knowledge/         # knowledge files (from agent image)
+///   cognition/           # instance-specific brain
+///     instance.toml      # this manifest
+///     memory/            # persistent memory across runs
+///     logs/              # daily log files (YYYY-MM-DD.log)
 /// ```
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceManifest {
@@ -145,9 +149,9 @@ impl InstanceManager {
 
     /// Spawn a new instance from an agent type definition.
     ///
-    /// Creates the instance directory structure (`memory/`, `knowledge/`, `logs/`),
-    /// copies the persona file if one exists in the agent definition,
-    /// and writes the initial `instance.toml` manifest.
+    /// Creates the instance directory structure with occupation/ and cognition/
+    /// subdirectories, copies the persona file if one exists in the agent
+    /// definition, and writes the initial `cognition/instance.toml` manifest.
     ///
     /// # Errors
     ///
@@ -168,10 +172,9 @@ impl InstanceManager {
             );
         }
 
-        // Create directory structure
-        fs::create_dir_all(inst_dir.join("memory"))?;
-        fs::create_dir_all(inst_dir.join("knowledge"))?;
-        fs::create_dir_all(inst_dir.join("logs"))?;
+        // Create directory structure (occupation/ + cognition/ split)
+        fs::create_dir_all(inst_dir.join("cognition/memory"))?;
+        fs::create_dir_all(inst_dir.join("cognition/logs"))?;
 
         let manifest = InstanceManifest {
             name: instance_name.to_string(),
@@ -184,11 +187,12 @@ impl InstanceManager {
             github_repo: None,
         };
 
-        // Write persona.md stub if agent type has one
+        // Write persona.md to occupation/persona.md if agent type has one
         if let Some(persona_path) = &def.persona_path {
             let expanded = shellexpand::tilde(persona_path).to_string();
             if Path::new(&expanded).exists() {
-                fs::copy(&expanded, inst_dir.join("persona.md"))
+                fs::create_dir_all(inst_dir.join("occupation"))?;
+                fs::copy(&expanded, inst_dir.join("occupation/persona.md"))
                     .context("failed to copy persona.md")?;
             }
         }
@@ -213,7 +217,8 @@ impl InstanceManager {
         if keep_memory {
             // Move memory dir to a backup location
             let backup = self.base_dir.join(format!(".{}.memory.bak", name));
-            let mem_dir = inst_dir.join("memory");
+            // Try new path first, fall back to old
+            let mem_dir = resolve_path(&inst_dir, "cognition/memory", "memory");
             if mem_dir.exists() {
                 fs::rename(&mem_dir, &backup).ok();
             }
@@ -245,8 +250,10 @@ impl InstanceManager {
                 continue;
             }
 
-            let manifest_path = entry.path().join("instance.toml");
-            if !manifest_path.exists() {
+            // Check for instance.toml in cognition/ (new) or root (old)
+            let new_manifest = entry.path().join("cognition/instance.toml");
+            let old_manifest = entry.path().join("instance.toml");
+            if !new_manifest.exists() && !old_manifest.exists() {
                 continue;
             }
 
@@ -365,24 +372,31 @@ impl InstanceManager {
         Ok(manifest.cron)
     }
 
+    /// Resolve the logs directory for an instance.
+    /// Uses `cognition/logs/` if it exists, falls back to `logs/` for backward compat.
+    fn logs_dir(&self, name: &str) -> PathBuf {
+        resolve_path(&self.base_dir.join(name), "cognition/logs", "logs")
+    }
+
     /// Returns the path to the current daily log file for an instance.
     ///
-    /// The path is `<instance>/logs/YYYY-MM-DD.log` based on today's UTC date.
+    /// The path is `<instance>/cognition/logs/YYYY-MM-DD.log` based on today's UTC date.
+    /// Falls back to `<instance>/logs/` for backward compat.
     /// Note: the file (and parent directory) may not exist yet.
     pub fn log_path(&self, name: &str) -> PathBuf {
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        self.base_dir.join(name).join("logs").join(format!("{}.log", today))
+        self.logs_dir(name).join(format!("{}.log", today))
     }
 
     /// Append a timestamped log entry to the instance's daily log file.
     ///
-    /// Logs are stored at `<instance>/logs/YYYY-MM-DD.log` with lines
+    /// Logs are stored at `<instance>/cognition/logs/YYYY-MM-DD.log` with lines
     /// formatted as `[HH:MM:SS] <entry>`. The log directory is created
     /// automatically if it does not exist.
     ///
     /// Before appending, the log file is rotated if it exceeds 1 MB.
     pub fn append_log(&self, name: &str, entry: &str) -> Result<()> {
-        let log_dir = self.base_dir.join(name).join("logs");
+        let log_dir = self.logs_dir(name);
         fs::create_dir_all(&log_dir)?;
 
         let log_file = self.log_path(name);
@@ -407,7 +421,7 @@ impl InstanceManager {
     /// in reverse chronological order, then returns them in chronological order.
     /// Returns an empty vec if the log directory does not exist.
     pub fn read_logs(&self, name: &str, lines: usize) -> Result<Vec<String>> {
-        let log_dir = self.base_dir.join(name).join("logs");
+        let log_dir = self.logs_dir(name);
         if !log_dir.exists() {
             return Ok(Vec::new());
         }
@@ -467,14 +481,24 @@ impl InstanceManager {
     }
 
     fn save_manifest(&self, name: &str, manifest: &InstanceManifest) -> Result<()> {
-        let path = self.base_dir.join(name).join("instance.toml");
+        // Save to cognition/instance.toml (new path), fall back to root if cognition/ doesn't exist
+        let inst_dir = self.base_dir.join(name);
+        let cognition_dir = inst_dir.join("cognition");
+        let path = if cognition_dir.exists() {
+            cognition_dir.join("instance.toml")
+        } else {
+            inst_dir.join("instance.toml")
+        };
         let content = toml::to_string_pretty(manifest)?;
         fs::write(&path, content)?;
         Ok(())
     }
 
     fn load_manifest(&self, name: &str) -> Result<InstanceManifest> {
-        let path = self.base_dir.join(name).join("instance.toml");
+        // Try cognition/instance.toml first, fall back to root instance.toml
+        let inst_dir = self.base_dir.join(name);
+        let new_path = inst_dir.join("cognition/instance.toml");
+        let path = if new_path.exists() { new_path } else { inst_dir.join("instance.toml") };
         let content =
             fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
         let manifest: InstanceManifest =
@@ -485,6 +509,13 @@ impl InstanceManager {
     fn last_log_entry(&self, name: &str) -> Option<String> {
         self.read_logs(name, 1).ok()?.into_iter().next()
     }
+}
+
+/// Resolve a path with backward compatibility.
+/// Tries the new path first, falls back to the old path if the new one doesn't exist.
+pub fn resolve_path(inst_dir: &Path, new: &str, old: &str) -> PathBuf {
+    let new_path = inst_dir.join(new);
+    if new_path.exists() { new_path } else { inst_dir.join(old) }
 }
 
 /// Derive the default instance name from agent type and system username.

@@ -151,10 +151,8 @@ pub async fn run_telegram_bot(data_dir: &str, instance: &str, token: &str) -> Re
             let skill_name = parts[0].trim_start_matches('/');
             let skill_args = if parts.len() > 1 { parts[1] } else { "" };
 
-            // Check if skill exists (.ts or .sh)
-            let script = ["ts", "sh"].iter()
-                .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
-                .find(|p| p.exists());
+            // Check if skill exists (.ts or .sh) — try occupation/skills/ first
+            let script = find_skill_script(&inst_dir, skill_name);
 
             if script.is_none() {
                 // Skill not found — try claude -p for natural language
@@ -249,8 +247,9 @@ pub fn spawn_telegram_bot(data_dir: String, instance: String, token: String) {
 
 /// Try to use claude -p to interpret natural language and run matching skills.
 fn try_claude_prompt(instance: &str, query: &str, inst_dir: &Path) -> Option<String> {
-    // Read persona
-    let persona = std::fs::read_to_string(inst_dir.join("persona.md")).unwrap_or_default();
+    // Read persona (try occupation/persona.md first, fall back to persona.md)
+    let persona_path = crate::agents::instance::resolve_path(inst_dir, "occupation/persona.md", "persona.md");
+    let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
 
     // Read skill catalog
     let skill_info = AgentfileSpec::load(inst_dir)
@@ -288,9 +287,8 @@ fn try_claude_prompt(instance: &str, query: &str, inst_dir: &Path) -> Option<Str
             let skill_name = parts[0];
             let args = if parts.len() > 1 { parts[1] } else { "" };
 
-            let script = ["ts", "sh"].iter()
-                .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
-                .find(|p| p.exists());
+            // Try occupation/skills/ first, then skills/ for backward compat
+            let script = find_skill_script(inst_dir, skill_name);
             if let Some(script) = script {
                 // Load vault env
                 let env = load_vault_env().unwrap_or_default();
@@ -349,13 +347,10 @@ fn exec_skill(
     args: &str,
     data_dir: &str,
 ) -> Result<(i32, String, String)> {
-    let script = ["ts", "sh"].iter()
-        .map(|ext| inst_dir.join("skills").join(format!("{}.{}", skill_name, ext)))
-        .find(|p| p.exists());
-
-    let script = match script {
+    // Try occupation/skills/ first, then skills/ for backward compat
+    let script = match find_skill_script(inst_dir, skill_name) {
         Some(s) => s,
-        None => anyhow::bail!("skill script not found: {}/skills/{}.{{ts,sh}}", inst_dir.display(), skill_name),
+        None => anyhow::bail!("skill script not found: {}/occupation/skills/{}.{{ts,sh}}", inst_dir.display(), skill_name),
     };
 
     // Load vault env
@@ -443,6 +438,19 @@ fn format_skill_not_found(_instance: &str, skill_name: &str, inst_dir: &Path) ->
     }
 
     msg
+}
+
+/// Find a skill script, trying occupation/skills/ first, then skills/.
+fn find_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
+    for dir in &["occupation/skills", "skills"] {
+        for ext in &["ts", "sh"] {
+            let path = inst_dir.join(dir).join(format!("{}.{}", skill_name, ext));
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// Load vault environment variables by decrypting vault.age with vault.key.

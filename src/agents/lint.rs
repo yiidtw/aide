@@ -63,7 +63,7 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    // 1. Parse Agentfile.toml
+    // 1. Parse Agentfile.toml (tries occupation/Agentfile.toml first)
     let spec = match AgentfileSpec::load(dir) {
         Ok(s) => {
             passed.push("Agentfile.toml parsed".into());
@@ -78,6 +78,9 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
             });
         }
     };
+
+    // Resolve base dir for file checks
+    let base = AgentfileSpec::base_dir(dir);
 
     // 2. name and version (guaranteed by serde, but confirm non-empty)
     if spec.agent.name.is_empty() {
@@ -111,7 +114,7 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
 
     // 5. Persona file exists
     if let Some(persona) = &spec.persona {
-        let p = dir.join(&persona.file);
+        let p = base.join(&persona.file);
         if p.exists() {
             passed.push(format!("{} exists", persona.file));
         } else {
@@ -137,7 +140,7 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
 
         // 7-8. Script file exists and is executable
         if let Some(script) = &skill.script {
-            let script_path = dir.join(script);
+            let script_path = base.join(script);
             if script_path.exists() {
                 let meta = fs::metadata(&script_path)?;
                 let mode = meta.permissions().mode();
@@ -153,7 +156,7 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
 
         // 9. Prompt file exists
         if let Some(prompt) = &skill.prompt {
-            let prompt_path = dir.join(prompt);
+            let prompt_path = base.join(prompt);
             if prompt_path.exists() {
                 passed.push(format!("{prompt} exists"));
             } else {
@@ -188,7 +191,7 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
 
     // 14. Knowledge directory exists if declared
     if let Some(knowledge) = &spec.knowledge {
-        let knowledge_path = dir.join(&knowledge.dir);
+        let knowledge_path = base.join(&knowledge.dir);
         if !knowledge_path.exists() {
             warnings.push(format!("knowledge directory not found: {}", knowledge.dir));
         } else {
@@ -230,8 +233,8 @@ pub fn lint_agent(dir: &Path) -> Result<LintResult> {
         }
     }
 
-    // 11. Credential leak scan
-    scan_for_credentials(dir, dir, &mut errors)?;
+    // 11. Credential leak scan (scan only the occupation base dir)
+    scan_for_credentials(&base, &base, &mut errors)?;
 
     Ok(LintResult {
         passed,

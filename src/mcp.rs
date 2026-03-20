@@ -281,14 +281,14 @@ fn tool_aide_exec(id: Value, args: &Value, mgr: &InstanceManager) -> Value {
         Err(e) => return tool_error(id, &format!("Error loading env: {}", e)),
     };
 
-    // Find the skill script
-    let local_script = inst_dir.join("skills").join(format!("{}.sh", skill));
-    if !local_script.exists() {
-        return tool_error(
+    // Find the skill script (try occupation/skills/ first, then skills/)
+    let local_script = match find_skill_script(&inst_dir, skill) {
+        Some(s) => s,
+        None => return tool_error(
             id,
-            &format!("Error: skill script not found: {}", local_script.display()),
-        );
-    }
+            &format!("Error: skill script not found for '{}'", skill),
+        ),
+    };
 
     // Execute
     let (exit_code, stdout, stderr) =
@@ -364,6 +364,19 @@ fn tool_aide_logs(id: Value, args: &Value, mgr: &InstanceManager) -> Value {
 
 // ─── Helpers (replicated from main.rs since they are not pub) ───
 
+/// Find a skill script, trying occupation/skills/ first, then skills/.
+fn find_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
+    for dir in &["occupation/skills", "skills"] {
+        for ext in &["ts", "sh"] {
+            let path = inst_dir.join(dir).join(format!("{}.{}", skill_name, ext));
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 fn exec_skill_script(
     script: &Path,
     args: &str,
@@ -402,8 +415,10 @@ fn load_scoped_env(
         return Ok(Vec::new());
     }
 
-    let agentfile = inst_dir.join("Agentfile.toml");
-    if !agentfile.exists() {
+    // Check for Agentfile.toml (new: occupation/, old: root)
+    let new_agentfile = inst_dir.join("occupation/Agentfile.toml");
+    let old_agentfile = inst_dir.join("Agentfile.toml");
+    if !new_agentfile.exists() && !old_agentfile.exists() {
         return Ok(all_env); // Legacy: no Agentfile = inject all
     }
 

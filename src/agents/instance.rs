@@ -49,6 +49,12 @@ pub struct InstanceManifest {
     /// Set by `aide deploy --github`. Used by the daemon to poll for new issues.
     #[serde(default)]
     pub github_repo: Option<String>,
+    /// Globally unique instance ID (UUIDv4), generated at spawn time.
+    #[serde(default)]
+    pub uuid: Option<String>,
+    /// Machine hostname where this instance runs.
+    #[serde(default)]
+    pub machine_id: Option<String>,
 }
 
 /// A scheduled skill execution entry.
@@ -185,6 +191,8 @@ impl InstanceManager {
             domains: def.domains.clone(),
             cron: Vec::new(),
             github_repo: None,
+            uuid: Some(uuid::Uuid::new_v4().to_string()),
+            machine_id: Some(gethostname()),
         };
 
         // Write persona.md to occupation/persona.md if agent type has one
@@ -480,6 +488,18 @@ impl InstanceManager {
         Ok(())
     }
 
+    /// Ensure an instance has a UUID, backfilling one if missing.
+    /// Returns the UUID string.
+    pub fn ensure_uuid(&self, name: &str) -> Result<String> {
+        let mut manifest = self.load_manifest(name)?;
+        if manifest.uuid.is_none() {
+            manifest.uuid = Some(uuid::Uuid::new_v4().to_string());
+            manifest.machine_id = Some(gethostname());
+            self.save_manifest(name, &manifest)?;
+        }
+        Ok(manifest.uuid.unwrap())
+    }
+
     fn save_manifest(&self, name: &str, manifest: &InstanceManifest) -> Result<()> {
         // Save to cognition/instance.toml (new path), fall back to root if cognition/ doesn't exist
         let inst_dir = self.base_dir.join(name);
@@ -516,6 +536,18 @@ impl InstanceManager {
 pub fn resolve_path(inst_dir: &Path, new: &str, old: &str) -> PathBuf {
     let new_path = inst_dir.join(new);
     if new_path.exists() { new_path } else { inst_dir.join(old) }
+}
+
+/// Get the machine hostname.
+fn gethostname() -> String {
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Return the first 4 characters of a UUID as a short prefix.
+pub fn uuid_prefix(uuid: &str) -> String {
+    uuid.chars().take(4).collect()
 }
 
 /// Derive the default instance name from agent type and system username.

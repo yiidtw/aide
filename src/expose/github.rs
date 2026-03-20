@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tracing::{error, info, warn};
 
 use crate::agents::agentfile::AgentfileSpec;
-use crate::agents::instance::InstanceManager;
+use crate::agents::instance::{self, InstanceManager};
 
 const GITHUB_API: &str = "https://api.github.com";
 const POLL_INTERVAL_SECS: u64 = 300; // 5 minutes
@@ -56,6 +56,9 @@ pub fn start_github_issues_ticker(data_dir: String) {
             };
 
             for inst in &instances {
+                // Ensure UUID exists (backfill for old instances)
+                let _ = mgr.ensure_uuid(&inst.name);
+
                 // Resolve github_repo from manifest or Agentfile
                 let repo = match resolve_github_repo(&mgr, &inst.name) {
                     Some(r) => r,
@@ -63,6 +66,9 @@ pub fn start_github_issues_ticker(data_dir: String) {
                 };
 
                 let inst_dir = mgr.base_dir().join(&inst.name);
+
+                // Load manifest for identity info
+                let manifest = mgr.get(&inst.name).ok().flatten();
 
                 // Get or create per-instance state
                 let state = states.entry(inst.name.clone()).or_insert_with(|| {
@@ -111,13 +117,30 @@ pub fn start_github_issues_ticker(data_dir: String) {
                                 title = %title,
                                 "new github issue"
                             );
+
+                            // Routing check
+                            let body_text = format!("{}\n{}", title, body);
+                            let (my_machine, my_uuid_pfx) = get_identity(&manifest);
+                            if !is_routed_to_us(&body_text, &my_machine, &my_uuid_pfx) {
+                                state.last_seen_issue = state.last_seen_issue.max(number);
+                                continue;
+                            }
+
+                            // Leader election: try to claim via 👀 reaction
+                            if !try_claim_issue(&client, &repo, &token, number).await {
+                                info!(instance = %inst.name, issue = number, "lost leader election, skipping");
+                                state.last_seen_issue = state.last_seen_issue.max(number);
+                                continue;
+                            }
+
                             let _ = mgr.append_log(
                                 &inst.name,
                                 &format!("github-issue: #{} by {} — {}", number, author, title),
                             );
 
-                            // Ack
-                            if let Err(e) = post_comment(&client, &repo, &token, number, "🤖 received, processing...").await {
+                            // Ack with identity
+                            let ack_msg = format_ack(&inst.name, &manifest);
+                            if let Err(e) = post_comment(&client, &repo, &token, number, &ack_msg).await {
                                 warn!(error = %e, "failed to ack issue #{}", number);
                             }
 
@@ -167,7 +190,7 @@ pub fn start_github_issues_ticker(data_dir: String) {
                 // Poll for new comments
                 if let Err(e) = poll_issue_comments(
                     &client, &mgr, &inst.name, &inst_dir, &repo, &token,
-                    &mut state.last_seen_comments,
+                    &mut state.last_seen_comments, &manifest,
                 ).await {
                     warn!(instance = %inst.name, error = %e, "github comments poll failed");
                 }
@@ -284,6 +307,7 @@ async fn poll_issue_comments(
     repo: &str,
     token: &str,
     last_seen_comments: &mut HashMap<u64, u64>,
+    manifest: &Option<crate::agents::instance::InstanceManifest>,
 ) -> Result<()> {
     let url = format!(
         "{}/repos/{}/issues?state=open&sort=updated&direction=desc&per_page=5",
@@ -356,6 +380,20 @@ async fn poll_issue_comments(
                 continue;
             }
 
+            // Routing check
+            let (my_machine, my_uuid_pfx) = get_identity(manifest);
+            if !is_routed_to_us(body, &my_machine, &my_uuid_pfx) {
+                last_seen_comments.insert(number, last_seen.max(comment_id));
+                continue;
+            }
+
+            // Leader election: try to claim via 👀 reaction on comment
+            if !try_claim_comment(client, repo, token, comment_id).await {
+                info!(instance = %instance, issue = number, comment = comment_id, "lost comment leader election, skipping");
+                last_seen_comments.insert(number, last_seen.max(comment_id));
+                continue;
+            }
+
             info!(
                 instance = %instance,
                 issue = number,
@@ -368,7 +406,8 @@ async fn poll_issue_comments(
                 &format!("github-comment: #{} by {} — {}", number, author, truncate(body, 100)),
             );
 
-            let _ = post_comment(client, repo, token, number, "🤖 received, processing...").await;
+            let ack_msg = format_ack(instance, manifest);
+            let _ = post_comment(client, repo, token, number, &ack_msg).await;
 
             let result = exec_agent(instance, inst_dir, body);
 
@@ -709,6 +748,118 @@ fn truncate(s: &str, max: usize) -> String {
         t.push_str("...");
         t
     }
+}
+
+/// Try to claim an issue by adding 👀 reaction.
+/// Returns true if this machine wins the leader election.
+async fn try_claim_issue(
+    client: &reqwest::Client,
+    repo: &str,
+    token: &str,
+    issue_number: u64,
+) -> bool {
+    let url = format!("{}/repos/{}/issues/{}/reactions", GITHUB_API, repo, issue_number);
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "aide-agent")
+        .header("Accept", "application/vnd.github+json")
+        .json(&serde_json::json!({ "content": "eyes" }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::CREATED => {
+            // Successfully added reaction. Wait briefly then check if we were first.
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+            let reactions_url = format!("{}/repos/{}/issues/{}/reactions", GITHUB_API, repo, issue_number);
+            let reactions_resp = client
+                .get(&reactions_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("User-Agent", "aide-agent")
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await;
+
+            match reactions_resp {
+                Ok(r) if r.status().is_success() => {
+                    let reactions: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
+                    let eyes: Vec<&serde_json::Value> = reactions.iter()
+                        .filter(|r| r["content"].as_str() == Some("eyes"))
+                        .collect();
+                    // If only one 👀, we won. If multiple, earliest wins (we arrived first).
+                    eyes.len() <= 1
+                }
+                _ => true, // Can't check, proceed anyway
+            }
+        }
+        Ok(r) if r.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+            // 422 = reaction already exists, someone else claimed it
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Try to claim a comment by adding 👀 reaction to it.
+async fn try_claim_comment(
+    client: &reqwest::Client,
+    repo: &str,
+    token: &str,
+    comment_id: u64,
+) -> bool {
+    let url = format!("{}/repos/{}/issues/comments/{}/reactions", GITHUB_API, repo, comment_id);
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "aide-agent")
+        .header("Accept", "application/vnd.github+json")
+        .json(&serde_json::json!({ "content": "eyes" }))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::CREATED => true,
+        _ => false,
+    }
+}
+
+/// Format ack message with instance identity.
+fn format_ack(instance_name: &str, manifest: &Option<crate::agents::instance::InstanceManifest>) -> String {
+    let (machine, uuid_pfx) = get_identity(manifest);
+    format!("🤖 {}({}:{}) received, processing...", instance_name, machine, uuid_pfx)
+}
+
+/// Extract machine_id and uuid_prefix from a manifest.
+fn get_identity(manifest: &Option<crate::agents::instance::InstanceManifest>) -> (String, String) {
+    match manifest {
+        Some(m) => {
+            let machine = m.machine_id.as_deref().unwrap_or("unknown").to_string();
+            let uuid = m.uuid.as_deref().unwrap_or("????");
+            let prefix = instance::uuid_prefix(uuid);
+            (machine, prefix)
+        }
+        None => ("unknown".to_string(), "????".to_string()),
+    }
+}
+
+/// Check if a message is routed to this instance.
+/// Returns true if no routing specified, or if routed to us.
+fn is_routed_to_us(
+    text: &str,
+    machine_id: &str,
+    uuid_prefix: &str,
+) -> bool {
+    let at_machine = format!("@{}", machine_id);
+    let at_uuid = format!("@{}", uuid_prefix);
+
+    // If no @ routing in text, anyone can handle it
+    if !text.contains('@') {
+        return true;
+    }
+
+    text.contains(&at_machine) || text.contains(&at_uuid)
 }
 
 fn truncate_for_comment(s: &str) -> String {

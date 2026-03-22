@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "aide"
-version = "0.4.1"
+name = "aide-sh"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",

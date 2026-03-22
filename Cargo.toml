@@ -1,9 +1,13 @@
 [package]
-name = "aide"
-version = "0.4.1"
+name = "aide-sh"
+version = "0.5.0"
 edition = "2021"
-description = "aide.sh — Docker for AI agents"
+description = "Deploy AI agents, just like Docker."
 license = "MIT"
+repository = "https://github.com/yiidtw/aide"
+homepage = "https://aide.sh"
+keywords = ["agent", "ai", "docker", "deployment", "gitaw"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "aide"

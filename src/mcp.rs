@@ -114,7 +114,7 @@ fn handle_tools_list(id: Value) -> Value {
             "tools": [
                 {
                     "name": "aide_list",
-                    "description": "List all running agent instances and their available skills",
+                    "description": "List all agent instances, their skills, and status. Use this first to see what agents are available. If no agents exist, suggest using aide_create to make one.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {}
@@ -122,17 +122,17 @@ fn handle_tools_list(id: Value) -> Value {
                 },
                 {
                     "name": "aide_exec",
-                    "description": "Execute a skill on an agent instance",
+                    "description": "Execute a skill on an agent instance. Run aide_list first to see available instances and skills. Example: instance='ntu.yiidtw', skill='cool', args='courses'",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "instance": {
                                 "type": "string",
-                                "description": "Agent instance name"
+                                "description": "Agent instance name (from aide_list)"
                             },
                             "skill": {
                                 "type": "string",
-                                "description": "Skill name to execute"
+                                "description": "Skill name to execute (from aide_list)"
                             },
                             "args": {
                                 "type": "string",
@@ -143,14 +143,37 @@ fn handle_tools_list(id: Value) -> Value {
                     }
                 },
                 {
+                    "name": "aide_create",
+                    "description": "Create a new agent instance. Creates the occupation/ (skills, persona, knowledge) and cognition/ (memory, logs) directory structure. After creation, add skills as .ts files in occupation/skills/. The agent needs no LLM by default — set [soul] prefer in Agentfile.toml if LLM is needed.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Agent name (e.g. 'easychair'). Instance will be named '<name>.yiidtw'"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "One-line description of what this agent does"
+                            },
+                            "skills": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "List of skill names to scaffold (e.g. ['review', 'submit', 'status'])"
+                            }
+                        },
+                        "required": ["name", "description"]
+                    }
+                },
+                {
                     "name": "aide_logs",
-                    "description": "Read recent logs from an agent instance",
+                    "description": "Read recent logs from an agent instance. Shows execution history, errors, and GITAW activity.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "instance": {
                                 "type": "string",
-                                "description": "Agent instance name"
+                                "description": "Agent instance name (from aide_list)"
                             },
                             "lines": {
                                 "type": "number",
@@ -173,6 +196,7 @@ fn handle_tools_call(id: Value, msg: &Value, mgr: &InstanceManager) -> Value {
     match tool_name {
         "aide_list" => tool_aide_list(id, mgr),
         "aide_exec" => tool_aide_exec(id, &arguments, mgr),
+        "aide_create" => tool_aide_create(id, &arguments, mgr),
         "aide_logs" => tool_aide_logs(id, &arguments, mgr),
         _ => tool_error(id, &format!("Unknown tool: {}", tool_name)),
     }
@@ -327,6 +351,142 @@ fn tool_aide_exec(id: Value, args: &Value, mgr: &InstanceManager) -> Value {
         output.push_str(&format!("[exit code: {}]", exit_code));
         return tool_error(id, &output);
     }
+
+    tool_result(id, &output)
+}
+
+// ─── Tool: aide_create ──────────────────────────────────────────
+
+fn tool_aide_create(id: Value, args: &Value, mgr: &InstanceManager) -> Value {
+    let name = match args.get("name").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error(id, "Error: missing required parameter 'name'"),
+    };
+    let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("An aide agent");
+    let skills: Vec<String> = args.get("skills")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    // Derive instance name
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "yiidtw".to_string());
+    let instance_name = format!("{}.{}", name, username);
+
+    // Check if already exists
+    match mgr.get(&instance_name) {
+        Ok(Some(_)) => return tool_error(id, &format!("Instance '{}' already exists. Use aide_exec to run skills on it.", instance_name)),
+        _ => {}
+    }
+
+    let inst_dir = mgr.base_dir().join(&instance_name);
+
+    // Create occupation/cognition structure
+    let dirs = [
+        "occupation/skills",
+        "occupation/knowledge",
+        "cognition/memory",
+        "cognition/logs",
+    ];
+    for dir in &dirs {
+        if let Err(e) = std::fs::create_dir_all(inst_dir.join(dir)) {
+            return tool_error(id, &format!("Error creating directory: {}", e));
+        }
+    }
+
+    // Write Agentfile.toml
+    let mut agentfile = format!(r#"[agent]
+name = "{name}"
+version = "0.1.0"
+description = "{description}"
+author = "{username}"
+
+[persona]
+file = "persona.md"
+
+[soul]
+prefer = "none"
+"#);
+
+    for skill in &skills {
+        agentfile.push_str(&format!(r#"
+[skills.{skill}]
+script = "skills/{skill}.ts"
+description = "{skill} skill"
+"#));
+    }
+
+    agentfile.push_str(r#"
+[knowledge]
+dir = "knowledge/"
+"#);
+
+    let _ = std::fs::write(inst_dir.join("occupation/Agentfile.toml"), &agentfile);
+
+    // Write persona.md
+    let persona = format!("# {}\n\n{}\n\n## Skills\n\n{}\n",
+        name, description,
+        if skills.is_empty() { "No skills yet. Add .ts files to occupation/skills/.".to_string() }
+        else { skills.iter().map(|s| format!("- **{}**", s)).collect::<Vec<_>>().join("\n") }
+    );
+    let _ = std::fs::write(inst_dir.join("occupation/persona.md"), &persona);
+
+    // Write skill stubs
+    for skill in &skills {
+        let stub = format!(r#"// {skill} — {description}
+// usage: {skill} [args...]
+
+const args = process.argv.slice(2);
+console.log(`{skill}: ${{args.join(" ") || "(no args)"}}`);
+console.log("TODO: implement {skill} skill");
+"#);
+        let _ = std::fs::write(inst_dir.join(format!("occupation/skills/{}.ts", skill)), stub);
+    }
+
+    // Write instance.toml
+    let uuid = format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32,
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos() >> 16) as u16,
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos() & 0xFFF) as u16,
+        0x8000u16 | (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos() as u16 & 0x3FFF),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64 & 0xFFFFFFFFFFFF,
+    );
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let instance_toml = format!(r#"name = "{instance_name}"
+agent_type = "{name}"
+created_at = "{}"
+email = "{name}@aide.sh"
+role = "{description}"
+domains = []
+uuid = "{uuid}"
+machine_id = "{hostname}"
+"#, chrono::Utc::now().to_rfc3339());
+    let _ = std::fs::write(inst_dir.join("cognition/instance.toml"), &instance_toml);
+
+    // Write .aideignore
+    let _ = std::fs::write(inst_dir.join(".aideignore"), "cognition/\n");
+
+    // Log
+    let _ = mgr.append_log(&instance_name, &format!("created via MCP (skills: {:?})", skills));
+
+    // Build response
+    let mut output = format!("Created agent: {}\n\nStructure:\n  occupation/\n    Agentfile.toml\n    persona.md\n    skills/\n    knowledge/\n  cognition/\n    instance.toml\n    memory/\n    logs/\n", instance_name);
+
+    if !skills.is_empty() {
+        output.push_str(&format!("\nSkill stubs created:\n"));
+        for skill in &skills {
+            output.push_str(&format!("  occupation/skills/{}.ts (TODO: implement)\n", skill));
+        }
+    }
+
+    output.push_str(&format!("\nNext steps:\n"));
+    output.push_str(&format!("  1. Edit skill .ts files in {}/occupation/skills/\n", inst_dir.display()));
+    output.push_str(&format!("  2. If skills need secrets: aide vault set KEY (user runs in terminal)\n"));
+    output.push_str(&format!("  3. Test: aide exec {} <skill>\n", instance_name));
 
     tool_result(id, &output)
 }

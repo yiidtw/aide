@@ -229,6 +229,14 @@ enum Command {
         #[arg(long)]
         private: bool,
     },
+    /// Commit agent state (cognition/) to its GITAW repo
+    Commit {
+        /// Instance name
+        instance: String,
+        /// Commit message
+        #[arg(short, long, default_value = "aide commit")]
+        message: String,
+    },
     /// Remove all aide data (~/.aide/) for clean reinstall
     Clean {
         /// Also remove vault keys (dangerous)
@@ -387,6 +395,10 @@ async fn main() -> Result<()> {
             }
         }
         Command::Whoami => return cmd_whoami(),
+        Command::Commit { instance, message } => {
+            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+            return cmd_commit(&config.aide.data_dir, instance, message);
+        }
         Command::Clean { include_vault } => return cmd_clean(*include_vault),
         Command::Cost => {
             let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
@@ -546,6 +558,7 @@ async fn main() -> Result<()> {
         | Command::SetupMcp { .. }
         | Command::Deploy { .. }
         | Command::Whoami
+        | Command::Commit { .. }
         | Command::Clean { .. }
         | Command::Cost => unreachable!(),
     }
@@ -2051,6 +2064,119 @@ fn cmd_hub(action: &HubAction) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn cmd_commit(data_dir: &str, instance: &str, message: &str) -> Result<()> {
+    let mgr = InstanceManager::new(data_dir);
+    let manifest = mgr.get(instance)?
+        .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
+
+    let github_repo = manifest.github_repo.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No github_repo set for {}. Run: aide deploy --github {}", instance, instance))?;
+
+    let inst_dir = mgr.base_dir().join(instance);
+
+    // Read auth token
+    let auth_path = aide_home().join("auth.json");
+    let token = if let Ok(content) = std::fs::read_to_string(&auth_path) {
+        serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|v| v["token"].as_str().map(|s| s.to_string()))
+    } else {
+        None
+    };
+    let token = token.ok_or_else(|| anyhow::anyhow!("Not logged in. Run: aide login"))?;
+
+    // Clone repo to temp dir
+    let tmp_dir = std::env::temp_dir().join(format!("aide-commit-{}", instance));
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)?;
+    }
+
+    let clone_output = std::process::Command::new("git")
+        .args(["clone", &format!("https://github.com/{}.git", github_repo), tmp_dir.to_str().unwrap()])
+        .output()?;
+
+    if !clone_output.status.success() {
+        bail!("Failed to clone {}: {}", github_repo, String::from_utf8_lossy(&clone_output.stderr));
+    }
+
+    // Copy occupation/ (if exists)
+    let occ_src = crate::agents::instance::resolve_path(&inst_dir, "occupation", ".");
+    if occ_src.join("Agentfile.toml").exists() {
+        let occ_dst = tmp_dir.join("occupation");
+        if occ_dst.exists() { std::fs::remove_dir_all(&occ_dst)?; }
+        copy_dir_recursive(&occ_src, &occ_dst)?;
+    }
+
+    // Copy cognition/ (memory + instance.toml, skip logs)
+    let cog_src = crate::agents::instance::resolve_path(&inst_dir, "cognition", ".");
+    let cog_dst = tmp_dir.join("cognition");
+    std::fs::create_dir_all(cog_dst.join("memory"))?;
+
+    // Copy memory files
+    let mem_src = crate::agents::instance::resolve_path(&inst_dir, "cognition/memory", "memory");
+    if mem_src.exists() {
+        let mem_dst = cog_dst.join("memory");
+        copy_dir_recursive(&mem_src, &mem_dst)?;
+    }
+
+    // Copy instance.toml
+    let inst_toml = crate::agents::instance::resolve_path(&inst_dir, "cognition/instance.toml", "instance.toml");
+    if inst_toml.exists() {
+        std::fs::copy(&inst_toml, cog_dst.join("instance.toml"))?;
+    }
+
+    // Ensure .gitkeep in empty dirs
+    let mem_dst = cog_dst.join("memory");
+    if std::fs::read_dir(&mem_dst)?.count() == 0 {
+        std::fs::write(mem_dst.join(".gitkeep"), "")?;
+    }
+
+    // Copy .aideignore and README if exist
+    for f in &[".aideignore", "README.md"] {
+        let src = inst_dir.join(f);
+        if src.exists() {
+            std::fs::copy(&src, tmp_dir.join(f))?;
+        }
+    }
+
+    // Git add + commit + push
+    let git = |args: &[&str]| -> Result<bool> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&tmp_dir)
+            .output()?;
+        Ok(output.status.success())
+    };
+
+    git(&["add", "-A"])?;
+
+    // Check if there are changes
+    let diff = std::process::Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(&tmp_dir)
+        .output()?;
+
+    if diff.status.success() {
+        println!("nothing to commit (cognition unchanged)");
+        std::fs::remove_dir_all(&tmp_dir)?;
+        return Ok(());
+    }
+
+    git(&["commit", "-m", message])?;
+    let pushed = git(&["push"])?;
+
+    std::fs::remove_dir_all(&tmp_dir)?;
+
+    if pushed {
+        println!("committed {} → {}", instance, github_repo);
+        mgr.append_log(instance, &format!("commit: {}", message))?;
+    } else {
+        bail!("push failed");
+    }
+
     Ok(())
 }
 

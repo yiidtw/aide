@@ -1468,6 +1468,23 @@ fn load_vault_env() -> Result<Vec<(String, String)>> {
 // ─── Vault commands ───
 
 /// Fix vault key file permissions (chmod 600)
+/// Read a line from stdin without echoing (for secret input).
+fn read_secure_input() -> Result<String> {
+    // Disable echo via stty
+    #[cfg(unix)]
+    let _ = std::process::Command::new("stty").arg("-echo").status();
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    // Restore echo
+    #[cfg(unix)]
+    let _ = std::process::Command::new("stty").arg("echo").status();
+    eprintln!(); // newline after hidden input
+
+    Ok(input.trim().to_string())
+}
+
 fn fix_vault_key_permissions(key_path: &Path) {
     #[cfg(unix)]
     {
@@ -1599,15 +1616,24 @@ async fn cmd_vault_set_token(v: &vault::Vault, username: &str, token: &str) -> R
 /// `aide.sh vault set KEY=VALUE [KEY2=VALUE2 ...]`
 async fn cmd_vault_set(v: &vault::Vault, pairs: &[String]) -> Result<()> {
     if pairs.is_empty() {
-        bail!("Usage: aide.sh vault set KEY=VALUE [KEY2=VALUE2 ...]");
+        bail!("Usage: aide vault set KEY=VALUE or aide vault set KEY (secure input)");
     }
 
-    // Parse pairs
+    // Parse pairs — support both KEY=VALUE and KEY (prompt for value)
     let mut new_vars: Vec<(String, String)> = Vec::new();
     for pair in pairs {
-        let (key, val) = pair.split_once('=')
-            .ok_or_else(|| anyhow::anyhow!("invalid format '{}' — expected KEY=VALUE", pair))?;
-        new_vars.push((key.to_string(), val.to_string()));
+        if let Some((key, val)) = pair.split_once('=') {
+            new_vars.push((key.to_string(), val.to_string()));
+        } else {
+            // No '=' — secure input mode
+            let key = pair.to_string();
+            eprint!("Enter value for {}: ", key);
+            let val = read_secure_input()?;
+            if val.is_empty() {
+                bail!("empty value for {}", key);
+            }
+            new_vars.push((key, val));
+        }
     }
 
     // Init vault if needed

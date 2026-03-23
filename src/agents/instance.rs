@@ -265,18 +265,23 @@ impl InstanceManager {
                 continue;
             }
 
-            if let Ok(manifest) = self.load_manifest(&name) {
-                let last_activity = self.last_log_entry(&name);
-                instances.push(InstanceInfo {
-                    name: manifest.name,
-                    agent_type: manifest.agent_type,
-                    status: InstanceStatus::Active, // TODO: check PID file
-                    created_at: manifest.created_at,
-                    email: manifest.email,
-                    role: manifest.role,
-                    cron_count: manifest.cron.len(),
-                    last_activity,
-                });
+            match self.load_manifest(&name) {
+                Ok(manifest) => {
+                    let last_activity = self.last_log_entry(&name);
+                    instances.push(InstanceInfo {
+                        name: manifest.name,
+                        agent_type: manifest.agent_type,
+                        status: InstanceStatus::Active, // TODO: check PID file
+                        created_at: manifest.created_at,
+                        email: manifest.email,
+                        role: manifest.role,
+                        cron_count: manifest.cron.len(),
+                        last_activity,
+                    });
+                }
+                Err(e) => {
+                    eprintln!("warning: skipping instance '{}': {}", name, e);
+                }
             }
         }
 

@@ -364,6 +364,15 @@ async fn main() -> Result<()> {
             return cmd_push(image);
         }
         Command::Pull { image } => {
+            // If argument matches an existing instance with .git/, do git pull
+            let config = AideConfig::load(&cli.config).unwrap_or_else(|_| AideConfig::default());
+            let mgr = InstanceManager::new(&config.aide.data_dir);
+            if let Ok(Some(_)) = mgr.get(image) {
+                let inst_dir = mgr.base_dir().join(image);
+                if inst_dir.join(".git").exists() {
+                    return cmd_pull_instance(&inst_dir, image);
+                }
+            }
             let (agent_ref, _version) = parse_image_ref(image);
             return cmd_pull(&agent_ref);
         }
@@ -729,6 +738,13 @@ fn cmd_run_from_pulled(
         None => instance::default_instance_name(agent_type),
     };
 
+    // Git clone path: if Agentfile has [expose.github] repo, clone it directly
+    if let Some(expose) = &spec.expose {
+        if let Some(gh) = &expose.github {
+            return cmd_run_from_github_clone(mgr, &gh.repo, &instance_name, agent_type, image);
+        }
+    }
+
     let def = config::AgentDef {
         email: format!("{}@aide.sh", spec.agent.name),
         role: spec.agent.description.clone().unwrap_or_default(),
@@ -803,6 +819,94 @@ fn cmd_run_from_pulled(
     Ok(())
 }
 
+/// Create an instance by cloning a GitHub repo directly.
+/// The instance directory IS the git working tree.
+fn cmd_run_from_github_clone(
+    mgr: &InstanceManager,
+    github_repo: &str,
+    instance_name: &str,
+    agent_type: &str,
+    image: &str,
+) -> Result<()> {
+    let inst_dir = mgr.base_dir().join(instance_name);
+    if inst_dir.exists() {
+        bail!(
+            "instance '{}' already exists. Use `aide rm {}` first.",
+            instance_name, instance_name
+        );
+    }
+
+    println!("cloning git@github.com:{}.git → {}", github_repo, instance_name);
+
+    let clone_output = std::process::Command::new("git")
+        .args([
+            "clone",
+            &format!("git@github.com:{}.git", github_repo),
+            inst_dir.to_str().unwrap(),
+        ])
+        .output()?;
+
+    if !clone_output.status.success() {
+        let stderr = String::from_utf8_lossy(&clone_output.stderr);
+        bail!("git clone failed: {}", stderr);
+    }
+
+    // Ensure cognition/logs/ exists (it's gitignored so won't be in the clone)
+    std::fs::create_dir_all(inst_dir.join("cognition/logs"))?;
+    std::fs::create_dir_all(inst_dir.join("cognition/memory"))?;
+
+    // Write/update instance.toml with local machine identity
+    let manifest_path = inst_dir.join("cognition/instance.toml");
+    let mut manifest = if manifest_path.exists() {
+        let content = std::fs::read_to_string(&manifest_path)?;
+        toml::from_str::<instance::InstanceManifest>(&content)
+            .unwrap_or_else(|_| instance::InstanceManifest {
+                name: instance_name.to_string(),
+                agent_type: agent_type.to_string(),
+                created_at: chrono::Utc::now(),
+                email: format!("{}@aide.sh", agent_type),
+                role: String::new(),
+                domains: Vec::new(),
+                cron: Vec::new(),
+                github_repo: Some(github_repo.to_string()),
+                uuid: Some(uuid::Uuid::new_v4().to_string()),
+                machine_id: Some(instance::gethostname()),
+            })
+    } else {
+        instance::InstanceManifest {
+            name: instance_name.to_string(),
+            agent_type: agent_type.to_string(),
+            created_at: chrono::Utc::now(),
+            email: format!("{}@aide.sh", agent_type),
+            role: String::new(),
+            domains: Vec::new(),
+            cron: Vec::new(),
+            github_repo: Some(github_repo.to_string()),
+            uuid: Some(uuid::Uuid::new_v4().to_string()),
+            machine_id: Some(instance::gethostname()),
+        }
+    };
+
+    // Always update identity for this machine
+    manifest.name = instance_name.to_string();
+    manifest.machine_id = Some(instance::gethostname());
+    if manifest.uuid.is_none() {
+        manifest.uuid = Some(uuid::Uuid::new_v4().to_string());
+    }
+    manifest.github_repo = Some(github_repo.to_string());
+
+    let content = toml::to_string_pretty(&manifest)?;
+    std::fs::write(&manifest_path, content)?;
+
+    mgr.append_log(instance_name, &format!("created from git clone '{}' (image: {})", github_repo, image))?;
+
+    // Auto-commit the machine_id/uuid update
+    auto_commit_instance(&inst_dir, &format!("run: {} on {}", instance_name, instance::gethostname()));
+
+    println!("{}", instance_name);
+    Ok(())
+}
+
 fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bool) -> Result<()> {
     let manifest = match mgr.get(instance)? {
         Some(m) => m,
@@ -869,6 +973,12 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
         instance,
         &format!("exec-result: {} → {} (exit {})", skill, status_msg, exit_code),
     )?;
+
+    // Auto-commit if instance is a git repo (fire-and-forget)
+    let inst_dir = mgr.base_dir().join(instance);
+    if let Some(summary) = auto_commit_instance(&inst_dir, &format!("exec: {}", skill)) {
+        eprintln!("[aide] {}", summary.lines().next().unwrap_or("committed"));
+    }
 
     if exit_code != 0 {
         // Docker exec returns the exit code of the executed command
@@ -1869,6 +1979,33 @@ fn cmd_push(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Pull latest changes for an existing git-backed instance.
+fn cmd_pull_instance(inst_dir: &Path, name: &str) -> Result<()> {
+    let output = std::process::Command::new("git")
+        .args(["pull", "--rebase"])
+        .current_dir(inst_dir)
+        .output()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(inst_dir)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        println!("pulled {} (HEAD: {})", name, head);
+        if !stdout.trim().is_empty() && stdout.trim() != "Already up to date." {
+            print!("{}", stdout);
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("pull failed: {}", stderr);
+    }
+    Ok(())
+}
+
 fn cmd_pull(agent_ref: &str) -> Result<()> {
     // agent_ref can be:
     //   "agent-name"       → pull from default hub
@@ -2095,112 +2232,27 @@ fn cmd_hub(action: &HubAction) -> Result<()> {
 
 fn cmd_commit(data_dir: &str, instance: &str, message: &str) -> Result<()> {
     let mgr = InstanceManager::new(data_dir);
-    let manifest = mgr.get(instance)?
+    let _manifest = mgr.get(instance)?
         .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
-
-    let github_repo = manifest.github_repo.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No github_repo set for {}. Run: aide deploy --github {}", instance, instance))?;
 
     let inst_dir = mgr.base_dir().join(instance);
 
-    // Read auth token
-    let auth_path = aide_home().join("auth.json");
-    let token = if let Ok(content) = std::fs::read_to_string(&auth_path) {
-        serde_json::from_str::<serde_json::Value>(&content)
-            .ok()
-            .and_then(|v| v["token"].as_str().map(|s| s.to_string()))
-    } else {
-        None
-    };
-    let token = token.ok_or_else(|| anyhow::anyhow!("Not logged in. Run: aide login"))?;
-
-    // Clone repo to temp dir
-    let tmp_dir = std::env::temp_dir().join(format!("aide-commit-{}", instance));
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)?;
+    if !inst_dir.join(".git").exists() {
+        bail!(
+            "Instance '{}' is not a git repo.\nRun: aide deploy --github {}",
+            instance, instance
+        );
     }
 
-    let clone_output = std::process::Command::new("git")
-        .args(["clone", &format!("https://github.com/{}.git", github_repo), tmp_dir.to_str().unwrap()])
-        .output()?;
-
-    if !clone_output.status.success() {
-        bail!("Failed to clone {}: {}", github_repo, String::from_utf8_lossy(&clone_output.stderr));
-    }
-
-    // Copy occupation/ (if exists)
-    let occ_src = crate::agents::instance::resolve_path(&inst_dir, "occupation", ".");
-    if occ_src.join("Agentfile.toml").exists() {
-        let occ_dst = tmp_dir.join("occupation");
-        if occ_dst.exists() { std::fs::remove_dir_all(&occ_dst)?; }
-        copy_dir_recursive(&occ_src, &occ_dst)?;
-    }
-
-    // Copy cognition/ (memory + instance.toml, skip logs)
-    let cog_src = crate::agents::instance::resolve_path(&inst_dir, "cognition", ".");
-    let cog_dst = tmp_dir.join("cognition");
-    std::fs::create_dir_all(cog_dst.join("memory"))?;
-
-    // Copy memory files
-    let mem_src = crate::agents::instance::resolve_path(&inst_dir, "cognition/memory", "memory");
-    if mem_src.exists() {
-        let mem_dst = cog_dst.join("memory");
-        copy_dir_recursive(&mem_src, &mem_dst)?;
-    }
-
-    // Copy instance.toml
-    let inst_toml = crate::agents::instance::resolve_path(&inst_dir, "cognition/instance.toml", "instance.toml");
-    if inst_toml.exists() {
-        std::fs::copy(&inst_toml, cog_dst.join("instance.toml"))?;
-    }
-
-    // Ensure .gitkeep in empty dirs
-    let mem_dst = cog_dst.join("memory");
-    if std::fs::read_dir(&mem_dst)?.count() == 0 {
-        std::fs::write(mem_dst.join(".gitkeep"), "")?;
-    }
-
-    // Copy .aideignore and README if exist
-    for f in &[".aideignore", "README.md"] {
-        let src = inst_dir.join(f);
-        if src.exists() {
-            std::fs::copy(&src, tmp_dir.join(f))?;
+    // In-place commit + push + sanity check
+    match auto_commit_instance(&inst_dir, message) {
+        Some(summary) => {
+            println!("{}", summary);
+            mgr.append_log(instance, &format!("commit: {}", message))?;
         }
-    }
-
-    // Git add + commit + push
-    let git = |args: &[&str]| -> Result<bool> {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&tmp_dir)
-            .output()?;
-        Ok(output.status.success())
-    };
-
-    git(&["add", "-A"])?;
-
-    // Check if there are changes
-    let diff = std::process::Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .current_dir(&tmp_dir)
-        .output()?;
-
-    if diff.status.success() {
-        println!("nothing to commit (cognition unchanged)");
-        std::fs::remove_dir_all(&tmp_dir)?;
-        return Ok(());
-    }
-
-    git(&["commit", "-m", message])?;
-    let pushed = git(&["push"])?;
-
-    std::fs::remove_dir_all(&tmp_dir)?;
-
-    if pushed {
-        println!("committed {} → {}", instance, github_repo);
-        mgr.append_log(instance, &format!("commit: {}", message))?;
-    } else {
-        bail!("push failed");
+        None => {
+            println!("nothing to commit (no changes)");
+        }
     }
 
     Ok(())
@@ -2339,16 +2391,17 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         bail!("Not logged in. Run: aide login");
     };
 
-    // Derive repo name from instance: school.ydwu → school-agent
+    // Derive repo name from instance: school.ydwu → aide-school
     let agent_name = instance.split('.').next().unwrap_or(instance);
     let repo_name = format!("aide-{}", agent_name);
     let visibility = if private { "--private" } else { "--public" };
+    let github_repo_ref = format!("{}/{}", username, repo_name);
 
-    println!("deploying {} → github.com/{}/{}", instance, username, repo_name);
+    println!("deploying {} → github.com/{}", instance, github_repo_ref);
 
-    // 1. Create repo
+    // 1. Create repo via gh CLI
     let create_output = std::process::Command::new("gh")
-        .args(["repo", "create", &format!("{}/{}", username, repo_name), visibility, "--confirm"])
+        .args(["repo", "create", &github_repo_ref, visibility, "--confirm"])
         .output()?;
 
     if !create_output.status.success() {
@@ -2359,77 +2412,11 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         println!("  repo already exists, updating...");
     }
 
-    // 2. Init git in a temp dir, copy agent files, push
-    let tmp_dir = std::env::temp_dir().join(format!("aide-deploy-{}", agent_name));
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)?;
-    }
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    // Copy agent files: deploy both occupation/ and cognition/, skip cognition/logs/
-    for entry in std::fs::read_dir(&inst_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        // Skip old-style logs/ and new-style cognition/logs/
-        if name == "logs" {
-            continue;
-        }
-        if name == "cognition" && entry.path().is_dir() {
-            // Copy cognition/ but skip logs/
-            let cog_dst = tmp_dir.join("cognition");
-            std::fs::create_dir_all(&cog_dst)?;
-            for cog_entry in std::fs::read_dir(entry.path())? {
-                let cog_entry = cog_entry?;
-                let cog_name = cog_entry.file_name().to_string_lossy().to_string();
-                if cog_name == "logs" {
-                    continue;
-                }
-                let dst = cog_dst.join(&cog_name);
-                if cog_entry.path().is_dir() {
-                    copy_dir_recursive(&cog_entry.path(), &dst)?;
-                } else {
-                    std::fs::copy(cog_entry.path(), &dst)?;
-                }
-            }
-            continue;
-        }
-        let dst = tmp_dir.join(&name);
-        if entry.path().is_dir() {
-            copy_dir_recursive(&entry.path(), &dst)?;
-        } else {
-            std::fs::copy(entry.path(), &dst)?;
-        }
-    }
-
-    // Ensure cognition/memory/ exists with .gitkeep
-    std::fs::create_dir_all(tmp_dir.join("cognition/memory"))?;
-    std::fs::write(tmp_dir.join("cognition/memory/.gitkeep"), "")?;
-    // Ensure occupation/knowledge/ exists
-    std::fs::create_dir_all(tmp_dir.join("occupation/knowledge"))?;
-    if !tmp_dir.join("occupation/knowledge/.gitkeep").exists() {
-        std::fs::write(tmp_dir.join("occupation/knowledge/.gitkeep"), "")?;
-    }
-
-    // Create README pointing to occupation/persona.md
-    let readme = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
-        let desc = spec.agent.description.as_deref().unwrap_or("An aide.sh agent");
-        let persona_note = if spec.persona.is_some() {
-            "\n\nSee [occupation/persona.md](occupation/persona.md) for agent personality and behavior.\n"
-        } else {
-            "\n"
-        };
-        format!("# {}\n\n{}{}\nPowered by [aide.sh](https://aide.sh)\n",
-            agent_name, desc, persona_note)
-    } else {
-        format!("# {}\n\nAn aide.sh agent.\n", agent_name)
-    };
-    std::fs::write(tmp_dir.join("README.md"), readme)?;
-
-    // Git init + push
-    let git = |args: &[&str]| -> Result<()> {
+    // 2. Git init in-place (instance dir = git repo)
+    let git = |args: &[&str]| -> Result<bool> {
         let output = std::process::Command::new("git")
             .args(args)
-            .current_dir(&tmp_dir)
+            .current_dir(&inst_dir)
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2437,36 +2424,199 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
                 tracing::warn!("git {:?}: {}", args, stderr);
             }
         }
-        Ok(())
+        Ok(output.status.success())
     };
 
-    git(&["init"])?;
+    let is_git_repo = inst_dir.join(".git").exists();
+
+    if !is_git_repo {
+        // Write .gitignore before init
+        write_instance_gitignore(&inst_dir)?;
+
+        // Ensure .gitkeep in empty dirs
+        std::fs::create_dir_all(inst_dir.join("cognition/memory"))?;
+        if std::fs::read_dir(inst_dir.join("cognition/memory"))?.count() == 0 {
+            std::fs::write(inst_dir.join("cognition/memory/.gitkeep"), "")?;
+        }
+        std::fs::create_dir_all(inst_dir.join("occupation/knowledge"))?;
+        if !inst_dir.join("occupation/knowledge/.gitkeep").exists()
+            && std::fs::read_dir(inst_dir.join("occupation/knowledge")).map(|d| d.count()).unwrap_or(0) == 0
+        {
+            std::fs::write(inst_dir.join("occupation/knowledge/.gitkeep"), "")?;
+        }
+
+        // Create README
+        let readme = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
+            let desc = spec.agent.description.as_deref().unwrap_or("An aide.sh agent");
+            let persona_note = if spec.persona.is_some() {
+                "\n\nSee [occupation/persona.md](occupation/persona.md) for agent personality and behavior.\n"
+            } else {
+                "\n"
+            };
+            format!("# {}\n\n{}{}\nPowered by [aide.sh](https://aide.sh)\n",
+                agent_name, desc, persona_note)
+        } else {
+            format!("# {}\n\nAn aide.sh agent.\n", agent_name)
+        };
+        std::fs::write(inst_dir.join("README.md"), readme)?;
+
+        git(&["init"])?;
+        git(&["remote", "add", "origin", &format!("git@github.com:{}.git", github_repo_ref)])?;
+    }
+
     git(&["add", "-A"])?;
-    git(&["commit", "-m", &format!("deploy {} agent", agent_name)])?;
+
+    // Check if there are changes to commit
+    let has_changes = !git(&["diff", "--cached", "--quiet"])?;
+    if has_changes {
+        git(&["commit", "-m", &format!("deploy {} agent", agent_name)])?;
+    }
+
     git(&["branch", "-M", "main"])?;
-    git(&["remote", "add", "origin", &format!("https://github.com/{}/{}.git", username, repo_name)])?;
-    git(&["push", "-u", "origin", "main", "--force"])?;
 
-    // Cleanup
-    std::fs::remove_dir_all(&tmp_dir)?;
+    // Try normal push first. If repo has existing commits, pull --rebase then push.
+    let pushed = if !git(&["push", "-u", "origin", "main"])? {
+        git(&["pull", "--rebase", "origin", "main"])?;
+        git(&["push", "-u", "origin", "main"])?
+    } else {
+        true
+    };
 
-    // Write github_repo back to instance.toml (uses save_manifest which handles new/old path)
-    let github_repo_ref = format!("{}/{}", username, repo_name);
+    if !pushed {
+        bail!("push failed — check SSH keys and repo permissions, or resolve conflicts manually");
+    }
+
+    // Write github_repo back to instance.toml
     if let Ok(Some(mut manifest)) = mgr.get(instance) {
         manifest.github_repo = Some(github_repo_ref.clone());
-        // Use resolve_path for backward compat
         let inst_path = mgr.base_dir().join(instance);
         let manifest_path = agents::instance::resolve_path(&inst_path, "cognition/instance.toml", "instance.toml");
         let content = toml::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, content)?;
     }
 
-    println!("  repo: https://github.com/{}/{}", username, repo_name);
-    println!("  workflow: issue-driven agent");
-    println!();
-    println!("talk to your agent:");
-    println!("  open an issue at https://github.com/{}/{}/issues/new", username, repo_name);
+    // Sanity check
+    let local_head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&inst_dir)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let short = &local_head[..7.min(local_head.len())];
 
+    println!("  repo: https://github.com/{}", github_repo_ref);
+    println!("  HEAD: {}", short);
+    println!("  instance dir is now a git repo");
+    mgr.append_log(instance, &format!("deploy-github: {} ({})", github_repo_ref, short))?;
+
+    Ok(())
+}
+
+// ─── Git-native instance helpers ─────────────────────────────────
+
+/// Auto-commit and push an instance directory if it's a git repo.
+/// Returns a summary string on success, or None if no changes / not a git repo.
+/// Fire-and-forget: never panics, never fails the caller.
+fn auto_commit_instance(inst_dir: &Path, message: &str) -> Option<String> {
+    if !inst_dir.join(".git").exists() {
+        return None;
+    }
+
+    let git_output = |args: &[&str]| -> std::result::Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(inst_dir)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    };
+
+    let git_ok = |args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(inst_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    // Stage all changes
+    git_ok(&["add", "-A"]);
+
+    // Check if there are staged changes
+    if git_ok(&["diff", "--cached", "--quiet"]) {
+        return None; // nothing to commit
+    }
+
+    // Count changed files by category
+    let diff_stat = git_output(&["diff", "--cached", "--name-only"]).unwrap_or_default();
+    let mut occ_count = 0usize;
+    let mut cog_count = 0usize;
+    let mut other_count = 0usize;
+    for line in diff_stat.lines() {
+        if line.starts_with("occupation/") {
+            occ_count += 1;
+        } else if line.starts_with("cognition/") {
+            cog_count += 1;
+        } else {
+            other_count += 1;
+        }
+    }
+    let total = occ_count + cog_count + other_count;
+
+    // Commit
+    if !git_ok(&["commit", "-m", message]) {
+        tracing::warn!("auto-commit failed for {}", inst_dir.display());
+        return None;
+    }
+
+    // Push
+    let push_ok = git_ok(&["push"]);
+    if !push_ok {
+        tracing::warn!("auto-push failed for {}", inst_dir.display());
+    }
+
+    // Sanity check: verify HEAD matches origin/main
+    let sanity = if push_ok {
+        // Fetch to update remote refs
+        git_ok(&["fetch", "origin", "--quiet"]);
+        let local_head = git_output(&["rev-parse", "HEAD"]).unwrap_or_default();
+        let remote_head = git_output(&["rev-parse", "origin/main"]).unwrap_or_default();
+        if !local_head.is_empty() && local_head == remote_head {
+            let short = &local_head[..7.min(local_head.len())];
+            format!("sanity: HEAD == origin/main ({})", short)
+        } else {
+            format!("sanity: MISMATCH local={} remote={}",
+                &local_head[..7.min(local_head.len())],
+                &remote_head[..7.min(remote_head.len())])
+        }
+    } else {
+        "sanity: push failed, remote not updated".to_string()
+    };
+
+    let summary = format!(
+        "committed: {} files ({} occupation, {} cognition{})\npushed: {}\n{}",
+        total,
+        occ_count,
+        cog_count,
+        if other_count > 0 { format!(", {} other", other_count) } else { String::new() },
+        if push_ok { "ok" } else { "FAILED" },
+        sanity,
+    );
+
+    Some(summary)
+}
+
+/// Write the standard .gitignore for an aide instance repo.
+fn write_instance_gitignore(inst_dir: &Path) -> Result<()> {
+    std::fs::write(inst_dir.join(".gitignore"), "cognition/logs/\n*.log\n.DS_Store\n")?;
     Ok(())
 }
 

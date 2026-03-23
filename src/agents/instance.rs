@@ -544,7 +544,7 @@ pub fn resolve_path(inst_dir: &Path, new: &str, old: &str) -> PathBuf {
 }
 
 /// Get the machine hostname.
-fn gethostname() -> String {
+pub fn gethostname() -> String {
     hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string())

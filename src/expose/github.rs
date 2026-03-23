@@ -607,137 +607,51 @@ fn load_vault_env() -> Result<Vec<(String, String)>> {
     Ok(vars)
 }
 
-/// Commit memory/ changes to the GitHub repo via Contents API.
+/// Commit changes (memory, skills, etc.) to the GitHub repo via in-place git.
 ///
-/// Scans the instance's memory/ directory for files, reads each one,
-/// and creates/updates them in the repo via PUT /repos/{repo}/contents/{path}.
+/// If the instance dir is a git repo, stages all changes, commits, and pushes.
+/// This replaces the old Contents API approach — the instance dir IS the repo.
 async fn commit_memory(
-    client: &reqwest::Client,
-    repo: &str,
-    token: &str,
+    _client: &reqwest::Client,
+    _repo: &str,
+    _token: &str,
     inst_dir: &std::path::Path,
     issue_number: u64,
 ) -> Result<()> {
-    use base64::Engine;
-
-    // Try cognition/memory/ first, fall back to memory/
-    let memory_dir = crate::agents::instance::resolve_path(inst_dir, "cognition/memory", "memory");
-    if !memory_dir.exists() {
+    if !inst_dir.join(".git").exists() {
         return Ok(());
     }
 
-    // Collect memory files (skip .gitkeep)
-    let mut files_to_commit = Vec::new();
-    collect_memory_files(&memory_dir, &memory_dir, &mut files_to_commit)?;
+    let message = format!("memory: issue #{}", issue_number);
 
-    if files_to_commit.is_empty() {
-        return Ok(());
-    }
-
-    info!(repo = %repo, files = files_to_commit.len(), "committing memory changes");
-
-    // Determine the repo path prefix based on the memory_dir location
-    let memory_prefix = if memory_dir.to_string_lossy().contains("cognition/memory") {
-        "cognition/memory"
-    } else {
-        "memory"
+    let git_ok = |args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(inst_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     };
 
-    for (rel_path, content) in &files_to_commit {
-        let api_path = format!("{}/{}", memory_prefix, rel_path);
-        let url = format!("{}/repos/{}/contents/{}", GITHUB_API, repo, api_path);
+    git_ok(&["add", "-A"]);
 
-        // Get SHA if file already exists (needed for update)
-        let sha: Option<String> = {
-            let resp = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token))
-                .header("User-Agent", "aide-agent")
-                .header("Accept", "application/vnd.github+json")
-                .send()
-                .await;
-            match resp {
-                Ok(r) if r.status().is_success() => {
-                    let body: serde_json::Value = r.json().await.unwrap_or_default();
-                    body["sha"].as_str().map(|s| s.to_string())
-                }
-                _ => None,
-            }
-        };
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
-
-        let mut body = serde_json::json!({
-            "message": format!("memory: issue #{}", issue_number),
-            "content": encoded,
-            "committer": {
-                "name": "aide-agent[bot]",
-                "email": "agent@aide.sh"
-            }
-        });
-
-        if let Some(sha) = sha {
-            body["sha"] = serde_json::Value::String(sha);
-        }
-
-        let resp = client
-            .put(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("User-Agent", "aide-agent")
-            .header("Accept", "application/vnd.github+json")
-            .json(&body)
-            .send()
-            .await;
-
-        match resp {
-            Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::CREATED => {
-                info!(file = %rel_path, "memory committed");
-            }
-            Ok(r) => {
-                let status = r.status();
-                let text = r.text().await.unwrap_or_default();
-                warn!(file = %rel_path, status = %status, "memory commit failed: {}", text);
-            }
-            Err(e) => {
-                warn!(file = %rel_path, error = %e, "memory commit request failed");
-            }
-        }
+    if git_ok(&["diff", "--cached", "--quiet"]) {
+        return Ok(()); // nothing to commit
     }
 
-    Ok(())
-}
-
-/// Collect all files in memory/ directory recursively, returning (relative_path, content).
-fn collect_memory_files(
-    base: &std::path::Path,
-    dir: &std::path::Path,
-    files: &mut Vec<(String, Vec<u8>)>,
-) -> Result<()> {
-    if !dir.is_dir() {
+    if !git_ok(&["commit", "-m", &message]) {
+        warn!("git commit failed for {}", inst_dir.display());
         return Ok(());
     }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
 
-        // Skip hidden files
-        if name.starts_with('.') {
-            continue;
-        }
-
-        if path.is_dir() {
-            collect_memory_files(base, &path, files)?;
-        } else {
-            let rel = path.strip_prefix(base)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            if let Ok(content) = std::fs::read(&path) {
-                files.push((rel, content));
-            }
-        }
+    if !git_ok(&["push"]) {
+        warn!("git push failed for {}", inst_dir.display());
+    } else {
+        info!(dir = %inst_dir.display(), "memory committed via git push");
     }
+
     Ok(())
 }
 

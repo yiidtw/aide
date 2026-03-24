@@ -476,6 +476,7 @@ fn exec_agent(
     let output = std::process::Command::new("claude")
         .arg("-p")
         .arg(&prompt)
+        .env("ANTHROPIC_API_KEY", "")
         .output();
 
     let response = match output {

@@ -265,10 +265,11 @@ fn try_claude_prompt(instance: &str, query: &str, inst_dir: &Path) -> Option<Str
         persona, skill_info, query
     );
 
-    // Try claude -p
+    // Try claude -p (force subscription mode — never consume API credits)
     let output = std::process::Command::new("claude")
         .arg("-p")
         .arg(&prompt)
+        .env("ANTHROPIC_API_KEY", "")
         .output()
         .ok()?;
 

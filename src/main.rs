@@ -1020,10 +1020,11 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
         persona, skill_info, query
     );
 
-    // Call claude -p
+    // Call claude -p (force subscription mode — never consume API credits)
     let output = std::process::Command::new("claude")
         .arg("-p")
         .arg(&prompt)
+        .env("ANTHROPIC_API_KEY", "")
         .output();
 
     let claude_response = match output {

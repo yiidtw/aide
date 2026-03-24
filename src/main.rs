@@ -811,12 +811,18 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
         &format!("exec-result: {} → {} (exit {})", skill, status_msg, exit_code),
     )?;
 
+    // GITAW: auto-commit memory (TLA+ CommitMemory)
+    // Every exec produces a memory entry — append-only, auditable.
+    let summary = if stdout.len() > 500 { &stdout[..500] } else { &stdout };
+    if let Err(e) = mgr.commit_memory(instance, skill, exit_code, summary) {
+        eprintln!("warning: memory commit failed: {}", e);
+    }
+
     if exit_code != 0 {
-        // Docker exec returns the exit code of the executed command
         std::process::exit(exit_code);
     }
 
-    let _ = manifest; // used for future interactive mode
+    let _ = manifest;
     Ok(())
 }
 
@@ -827,8 +833,13 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
 
     let inst_dir = mgr.base_dir().join(instance);
 
-    // Read persona
-    let persona = std::fs::read_to_string(inst_dir.join("persona.md")).unwrap_or_default();
+    // Read persona (try occupation/persona.md first, fall back to persona.md)
+    let persona_path = if inst_dir.join("occupation/persona.md").exists() {
+        inst_dir.join("occupation/persona.md")
+    } else {
+        inst_dir.join("persona.md")
+    };
+    let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
 
     // Read skill catalog from Agentfile
     let skill_info = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
@@ -837,17 +848,25 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
         String::new()
     };
 
+    // GITAW: Read memory from cognition/memory/ (inject into prompt)
+    let memory = mgr.read_memory(instance).unwrap_or_default();
+    let memory_section = if memory.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n## Memory (from prior executions)\n{}", memory)
+    };
+
     // Compose prompt for Claude
     let prompt = format!(
-        "You are an agent assistant. Given the following agent persona and skills, \
+        "You are an agent assistant. Given the following agent persona, memory, and skills, \
          answer the user's query by deciding which skill(s) to call.\n\n\
          IMPORTANT: Respond ONLY with the skill command to execute, in this exact format:\n\
          EXEC: <skill_name> [args]\n\n\
          The skill_name must be ONLY the skill name (e.g. 'cool', 'mail', 'briefing'), NOT the instance name.\n\
          If you need multiple skills, put each on its own line starting with EXEC:\n\
          If no skill matches, respond with: NONE: <explanation>\n\n\
-         ## Persona\n{}\n\n## Available Skills\n{}\n\n## User Query\n{}",
-        persona, skill_info, query
+         ## Persona\n{}{}\n\n## Available Skills\n{}\n\n## User Query\n{}",
+        persona, memory_section, skill_info, query
     );
 
     // Call claude -p
@@ -914,6 +933,9 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
                         exit_code
                     ),
                 )?;
+                // GITAW: auto-commit memory (TLA+ CommitMemory)
+                let summary = if stdout.len() > 500 { &stdout[..500] } else { &stdout };
+                let _ = mgr.commit_memory(instance, cmd, exit_code, summary);
             } else {
                 println!("skill not found: {}", skill_name);
             }

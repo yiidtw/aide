@@ -394,6 +394,110 @@ impl InstanceManager {
         Ok(())
     }
 
+    /// Commit a memory entry to the instance's cognition/memory/ directory.
+    ///
+    /// Each entry is a JSON line appended to `cognition/memory/memory.jsonl`.
+    /// This is the GITAW-compliant memory commit — append-only, auditable.
+    ///
+    /// The entry contains: skill name, args summary, exit code, timestamp.
+    /// This is the minimal memory that satisfies TLA+ CommitMemory.
+    pub fn commit_memory(
+        &self,
+        name: &str,
+        skill: &str,
+        exit_code: i32,
+        output_summary: &str,
+    ) -> Result<()> {
+        let memory_dir = {
+            let inst_dir = self.base_dir.join(name);
+            let cognition_memory = inst_dir.join("cognition").join("memory");
+            if cognition_memory.exists() || inst_dir.join("cognition").exists() {
+                cognition_memory
+            } else {
+                inst_dir.join("memory")
+            }
+        };
+        fs::create_dir_all(&memory_dir)?;
+
+        let memory_file = memory_dir.join("memory.jsonl");
+        let timestamp = Utc::now().to_rfc3339();
+        let reward = if exit_code == 0 { 1 } else { 0 };
+
+        // Truncate output summary to avoid bloat
+        let summary = if output_summary.len() > 500 {
+            &output_summary[..500]
+        } else {
+            output_summary
+        };
+
+        let entry = serde_json::json!({
+            "skill": skill,
+            "exit_code": exit_code,
+            "reward": reward,
+            "summary": summary,
+            "timestamp": timestamp,
+        });
+
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&memory_file)?;
+        f.write_all(entry.to_string().as_bytes())?;
+        f.write_all(b"\n")?;
+
+        Ok(())
+    }
+
+    /// Read all memory entries from an instance's cognition/memory/ directory.
+    ///
+    /// Returns the contents of all `.md` and `.jsonl` files in memory/,
+    /// formatted for injection into an LLM prompt.
+    pub fn read_memory(&self, name: &str) -> Result<String> {
+        let inst_dir = self.base_dir.join(name);
+        let memory_dir = {
+            let cognition_memory = inst_dir.join("cognition").join("memory");
+            if cognition_memory.exists() {
+                cognition_memory
+            } else {
+                inst_dir.join("memory")
+            }
+        };
+
+        if !memory_dir.exists() {
+            return Ok(String::new());
+        }
+
+        let mut parts = Vec::new();
+
+        let mut entries: Vec<_> = fs::read_dir(&memory_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let ext = e.path().extension()
+                    .map(|x| x.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                matches!(ext.as_str(), "md" | "jsonl" | "json" | "txt")
+            })
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in entries {
+            let path = entry.path();
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if let Ok(content) = fs::read_to_string(&path) {
+                // Limit each file to avoid context overflow
+                let truncated = if content.len() > 2000 {
+                    format!("{}...(truncated)", &content[..2000])
+                } else {
+                    content
+                };
+                parts.push(format!("### {}\n{}", filename, truncated));
+            }
+        }
+
+        Ok(parts.join("\n\n"))
+    }
+
     /// Read the most recent log entries for an instance.
     ///
     /// Reads from the newest log files first, collecting up to `lines` entries

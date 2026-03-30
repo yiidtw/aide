@@ -70,7 +70,7 @@ pub struct AgentfileSpec {
     #[serde(default)]
     pub persona: Option<PersonaSection>,
     /// The `[skills.*]` tables. A map of skill name to [`SkillDef`].
-    /// Each key becomes a subcommand in `aide.sh exec <instance> <skill>`.
+    /// Each key becomes a subcommand in `aide exec <instance> <skill>`.
     #[serde(default)]
     pub skills: HashMap<String, SkillDef>,
     /// The `[knowledge]` table (also accepts legacy `[seed]`). Optional.
@@ -97,7 +97,7 @@ pub struct AgentfileSpec {
 /// Resource limits for skill execution.
 ///
 /// Controls timeouts, LLM token budgets, and retry behavior.
-/// Applied by the daemon and `aide.sh exec`.
+/// Applied by the daemon and `aide exec`.
 ///
 /// ```toml
 /// [limits]
@@ -221,7 +221,7 @@ pub struct AgentMeta {
     /// Follows [semver](https://semver.org/) conventions.
     pub version: String,
     /// One-line description of what this agent does.
-    /// Shown in `aide.sh exec <instance> --help` and registry listings.
+    /// Shown in `aide exec <instance> --help` and registry listings.
     #[serde(default)]
     pub description: Option<String>,
     /// Author username (matches hub.aide.sh account).
@@ -250,7 +250,7 @@ pub struct PersonaSection {
 /// Skill definition within an agent.
 ///
 /// Each skill is either script-based (`.sh`) or prompt-based (`.md`), but not both.
-/// Skills are the executable units of an agent — they are what `aide.sh exec` runs.
+/// Skills are the executable units of an agent — they are what `aide exec` runs.
 ///
 /// ## Script-based skill
 ///
@@ -286,14 +286,14 @@ pub struct SkillDef {
     #[serde(default)]
     pub prompt: Option<String>,
     /// Cron schedule in standard 5-field format (e.g. `"0 8 * * *"`).
-    /// If set, the daemon (`aide.sh up`) will run this skill on schedule.
+    /// If set, the daemon (`aide up`) will run this skill on schedule.
     #[serde(default)]
     pub schedule: Option<String>,
     /// Scoped environment variables for this skill.
     /// When set, ONLY these vars are injected from the vault (overrides `[env]`).
     #[serde(default)]
     pub env: Option<Vec<String>>,
-    /// Human-readable description shown in `aide.sh exec <instance>` help output
+    /// Human-readable description shown in `aide exec <instance>` help output
     /// and in MCP tool listings.
     #[serde(default)]
     pub description: Option<String>,
@@ -326,7 +326,7 @@ pub struct KnowledgeSection {
 /// Environment variable declarations.
 ///
 /// Declares which environment variables the agent needs at runtime.
-/// Variables are injected from the aide vault (`aide.sh vault set KEY VALUE`).
+/// Variables are injected from the aide vault (`aide vault set KEY VALUE`).
 /// Required variables cause a startup error if missing; optional variables
 /// are silently omitted.
 ///
@@ -467,7 +467,7 @@ impl AgentfileSpec {
         Ok(warnings)
     }
 
-    /// Generate `--help` output for `aide.sh exec <instance> --help`.
+    /// Generate `--help` output for `aide exec <instance> --help`.
     ///
     /// Produces a human-readable help string with the following sections:
     /// - **Header**: instance name, agent name:version, and description.
@@ -523,7 +523,7 @@ impl AgentfileSpec {
         // Semantic mode hint
         out.push_str("Semantic mode:\n");
         out.push_str(&format!(
-            "  aide.sh exec -p {} \"<natural language query>\"\n",
+            "  aide exec -p {} \"<natural language query>\"\n",
             instance_name
         ));
         out.push_str("  (requires LLM runtime — ollama or MCP caller)\n");
@@ -533,7 +533,7 @@ impl AgentfileSpec {
 
     /// Returns the archive filename: `<name>-<version>.tar.gz`.
     ///
-    /// This is the naming convention used by `aide.sh build` and the registry.
+    /// This is the naming convention used by `aide build` and the registry.
     /// For example, agent `"school-assistant"` version `"0.1.0"` produces
     /// `"school-assistant-0.1.0.tar.gz"`.
     pub fn archive_name(&self) -> String {

@@ -117,7 +117,7 @@ console.log(`Hello, ${{name}}! I'm your aide agent.`);
     let readme = format!(
         r#"# {name}
 
-An aide.sh agent.
+An aide agent.
 
 ## Structure
 

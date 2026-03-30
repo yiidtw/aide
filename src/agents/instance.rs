@@ -42,7 +42,7 @@ pub struct InstanceManifest {
     /// Domain scopes this instance operates in (e.g. `["education", "email"]`).
     pub domains: Vec<String>,
     /// Scheduled cron entries for this instance. Managed via
-    /// `aide.sh cron add/rm` commands.
+    /// `aide cron add/rm` commands.
     #[serde(default)]
     pub cron: Vec<CronEntry>,
     /// GitHub repo for issue-driven workflow (e.g. `"yiidtw/debate-agent"`).
@@ -59,7 +59,7 @@ pub struct InstanceManifest {
 
 /// A scheduled skill execution entry.
 ///
-/// Stored within [`InstanceManifest::cron`]. The daemon (`aide.sh up`)
+/// Stored within [`InstanceManifest::cron`]. The daemon (`aide up`)
 /// evaluates these entries and runs the corresponding skill when the
 /// cron schedule matches.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub struct CronEntry {
     pub last_run: Option<DateTime<Utc>>,
 }
 
-/// Runtime view of an instance, used by `aide.sh ps`.
+/// Runtime view of an instance, used by `aide ps`.
 ///
 /// This is a read-only projection of [`InstanceManifest`] enriched with
 /// runtime information (status, last activity). Built by [`InstanceManager::list()`].
@@ -95,14 +95,14 @@ pub struct InstanceInfo {
     pub role: String,
     /// Number of cron entries registered.
     pub cron_count: usize,
-    /// Most recent log line, if any. Used for the "last activity" column in `aide.sh ps`.
+    /// Most recent log line, if any. Used for the "last activity" column in `aide ps`.
     pub last_activity: Option<String>,
 }
 
 /// Runtime status of an agent instance.
 ///
 /// Determined by daemon PID file presence and last activity recency.
-/// Displayed in `aide.sh ps` output.
+/// Displayed in `aide ps` output.
 #[derive(Debug, PartialEq)]
 pub enum InstanceStatus {
     /// Daemon is running and instance had recent activity (within 24h).
@@ -180,7 +180,7 @@ impl InstanceManager {
     /// # Errors
     ///
     /// Returns an error if an instance with the same name already exists.
-    /// Use `aide.sh rm <name>` to remove it first.
+    /// Use `aide rm <name>` to remove it first.
     pub fn spawn(
         &self,
         agent_type: &str,

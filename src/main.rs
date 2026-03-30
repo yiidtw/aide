@@ -57,7 +57,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    // ─── Container lifecycle (Docker-style) ───
+    // ─── Container lifecycle ───
 
     /// Create and start an agent instance from an image
     Run {
@@ -125,7 +125,7 @@ enum Command {
         instance: String,
     },
 
-    // ─── Image management (Docker-style) ───
+    // ─── Image management ───
 
     /// Build an agent image from an Agentfile
     Build {
@@ -1113,7 +1113,7 @@ fn find_aide_binary() -> String {
 fn cmd_ps(mgr: &InstanceManager) -> Result<()> {
     let instances = mgr.list()?;
     if instances.is_empty() {
-        println!("No agent instances. Use `aide.sh run <image>` to create one.");
+        println!("No agent instances. Use `aide run <image>` to create one.");
         return Ok(());
     }
 
@@ -1152,7 +1152,7 @@ fn cmd_run(
     let def = config.agents.get(image).ok_or_else(|| {
         let available: Vec<_> = config.agents.keys().cloned().collect();
         anyhow::anyhow!(
-            "image '{}' not found. Available: {}\nUse `aide.sh pull <user>/{}` to fetch from registry.",
+            "image '{}' not found. Available: {}\nUse `aide pull <user>/{}` to fetch from registry.",
             image,
             available.join(", "),
             image
@@ -1191,7 +1191,7 @@ fn cmd_run_from_pulled(
     let types_dir = aide_home().join("types").join(user).join(agent_type);
     if !types_dir.exists() {
         bail!(
-            "image '{}' not found locally. Run `aide.sh pull {}` first.",
+            "image '{}' not found locally. Run `aide pull {}` first.",
             image, image
         );
     }
@@ -1398,12 +1398,12 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
             if instance.contains('/') {
                 let suggested_name = instance.rsplit('/').next().unwrap_or(instance);
                 bail!(
-                    "Instance '{}' not found.\n\nTo create it:\n  aide.sh pull {}\n  aide.sh run {} --name {}\n  aide.sh exec {} {}",
+                    "Instance '{}' not found.\n\nTo create it:\n  aide pull {}\n  aide run {} --name {}\n  aide exec {} {}",
                     instance, instance, instance, suggested_name, suggested_name, skill
                 );
             } else {
                 bail!(
-                    "No such instance: {}\n\nAvailable instances: aide.sh ps\nTo pull from hub: aide.sh pull <user>/{}",
+                    "No such instance: {}\n\nAvailable instances: aide ps\nTo pull from hub: aide pull <user>/{}",
                     instance, instance
                 );
             }
@@ -1417,7 +1417,7 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
             print!("{}", spec.format_help(instance));
         } else {
             println!("{} (no Agentfile.toml — skill discovery unavailable)", instance);
-            println!("\nUsage: aide.sh exec {} <skill> [args...]", instance);
+            println!("\nUsage: aide exec {} <skill> [args...]", instance);
         }
         return Ok(());
     }
@@ -2254,7 +2254,7 @@ async fn cmd_vault_set_token(v: &vault::Vault, username: &str, token: &str) -> R
     Ok(())
 }
 
-/// `aide.sh vault set KEY=VALUE [KEY2=VALUE2 ...]`
+/// `aide vault set KEY=VALUE [KEY2=VALUE2 ...]`
 async fn cmd_vault_set(v: &vault::Vault, pairs: &[String]) -> Result<()> {
     if pairs.is_empty() {
         bail!("Usage: aide vault set KEY=VALUE or aide vault set KEY (secure input)");
@@ -2363,7 +2363,7 @@ fn scan_for_leaks(dir: &Path) -> Result<Vec<String>> {
 // ─── Dashboard ───
 
 async fn cmd_dash(data_dir: &str, port: u16) -> Result<()> {
-    println!("aide.sh dashboard → http://localhost:{}", port);
+    println!("aide dashboard → http://localhost:{}", port);
     dashboard::serve(data_dir, port).await
 }
 
@@ -2581,7 +2581,7 @@ fn cmd_pull(agent_ref: &str) -> Result<()> {
 async fn cmd_login() -> Result<()> {
     let client_id = "PLACEHOLDER_CLIENT_ID";
 
-    println!("aide.sh login — authenticating via GitHub");
+    println!("aide login — authenticating via GitHub");
     println!();
 
     let client = reqwest::Client::new();
@@ -2638,7 +2638,7 @@ async fn cmd_login() -> Result<()> {
             match error {
                 "authorization_pending" => continue,
                 "slow_down" => { tokio::time::sleep(std::time::Duration::from_secs(5)).await; continue; }
-                "expired_token" => bail!("device code expired — run `aide.sh login` again"),
+                "expired_token" => bail!("device code expired — run `aide login` again"),
                 "access_denied" => bail!("authorization denied"),
                 _ => bail!("OAuth error: {}", error),
             }
@@ -2996,7 +2996,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
 
         // Create README
         let readme = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
-            let desc = spec.agent.description.as_deref().unwrap_or("An aide.sh agent");
+            let desc = spec.agent.description.as_deref().unwrap_or("An aide agent");
             let persona_note = if spec.persona.is_some() {
                 "\n\nSee [occupation/persona.md](occupation/persona.md) for agent personality and behavior.\n"
             } else {
@@ -3005,7 +3005,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
             format!("# {}\n\n{}{}\nPowered by [aide.sh](https://aide.sh)\n",
                 agent_name, desc, persona_note)
         } else {
-            format!("# {}\n\nAn aide.sh agent.\n", agent_name)
+            format!("# {}\n\nAn aide agent.\n", agent_name)
         };
         std::fs::write(inst_dir.join("README.md"), readme)?;
 

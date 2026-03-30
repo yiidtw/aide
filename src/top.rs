@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::agents::instance::InstanceManager;
 
-/// Run the live TUI dashboard (`aide.sh top`).
+/// Run the live TUI dashboard (`aide top`).
 pub fn run_top(data_dir: &str) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -159,7 +159,7 @@ fn ui(
     let count = instances.len();
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
-            format!("aide.sh top \u{2014} {} instance{}", count, if count == 1 { "" } else { "s" }),
+            format!("aide top \u{2014} {} instance{}", count, if count == 1 { "" } else { "s" }),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Span::raw("    "),

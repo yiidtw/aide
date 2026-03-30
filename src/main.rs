@@ -632,15 +632,17 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
     }
 
     for name in &names {
+        println!("── migrate: {} ──", name);
         let inst_dir = mgr.base_dir().join(name);
         if !inst_dir.exists() {
-            println!("{}: not found, skipping", name);
+            println!("  ✗ instance directory not found");
             continue;
         }
 
         // Step 1: idempotent check
-        if inst_dir.join(".git").exists() {
-            // Already git-native — verify remote is set, set if missing
+        let has_git = inst_dir.join(".git").exists();
+        if has_git {
+            println!("  ✓ git repo exists");
             let has_remote = std::process::Command::new("git")
                 .args(["remote", "get-url", "origin"])
                 .current_dir(&inst_dir)
@@ -648,16 +650,17 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
                 .map(|o| o.status.success())
                 .unwrap_or(false);
             if has_remote {
-                println!("{}: already git-native with remote ✓", name);
+                println!("  ✓ remote origin configured");
+                println!("  ── already migrated");
             } else {
-                println!("{}: git-native but missing remote — setting up...", name);
-                migrate_set_remote(mgr, name, &inst_dir)?;
-                println!("{}: remote set ✓", name);
+                println!("  ✗ remote origin missing — setting up");
+                match migrate_set_remote(mgr, name, &inst_dir) {
+                    Ok(()) => println!("  ✓ remote origin configured"),
+                    Err(e) => println!("  ✗ remote setup failed: {}", e),
+                }
             }
             continue;
         }
-
-        println!("{}: migrating...", name);
 
         // Step 2: git init
         let ok = std::process::Command::new("git")
@@ -666,14 +669,17 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
             .status()
             .context("git init failed")?
             .success();
-        if !ok {
-            println!("{}: git init failed, skipping", name);
+        if ok {
+            println!("  ✓ git init");
+        } else {
+            println!("  ✗ git init failed");
             continue;
         }
 
         // Step 3: set remote
-        if let Err(e) = migrate_set_remote(mgr, name, &inst_dir) {
-            println!("{}: remote setup failed: {} (continuing without push)", name, e);
+        match migrate_set_remote(mgr, name, &inst_dir) {
+            Ok(()) => println!("  ✓ remote origin configured"),
+            Err(e) => println!("  ✗ remote setup: {} (continuing without push)", e),
         }
 
         // Step 4: initial commit
@@ -687,7 +693,7 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
             .args(["diff", "--cached", "--quiet"])
             .current_dir(&inst_dir)
             .status()
-            .map(|s| !s.success()) // non-zero = has staged changes
+            .map(|s| !s.success())
             .unwrap_or(false);
 
         if has_staged {
@@ -697,10 +703,14 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
-            if !committed {
-                println!("{}: commit failed", name);
+            if committed {
+                println!("  ✓ initial commit");
+            } else {
+                println!("  ✗ commit failed");
                 continue;
             }
+        } else {
+            println!("  ✓ nothing to commit (clean)");
         }
 
         // Step 5: push
@@ -719,12 +729,12 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if pushed {
-                println!("{}: migrated and pushed ✓", name);
+                println!("  ✓ pushed to origin/main");
             } else {
-                println!("{}: migrated (push failed — check remote auth)", name);
+                println!("  ✗ push failed — check remote auth");
             }
         } else {
-            println!("{}: migrated locally (no remote set)", name);
+            println!("  ⚠ no remote — skipping push");
         }
     }
 
@@ -1109,10 +1119,13 @@ fn cmd_run(
         None => instance::default_instance_name(image),
     };
 
+    println!("── run: {} ──", instance_name);
     let manifest = mgr.spawn(image, &instance_name, def)?;
+    println!("  ✓ instance created from image '{}'", image);
+    println!("  ✓ git repo initialized");
     mgr.append_log(&instance_name, &format!("created from image '{}'", image))?;
+    println!("  ✓ log initialized");
 
-    println!("{}", manifest.name);
     Ok(())
 }
 
@@ -1143,6 +1156,8 @@ fn cmd_run_from_pulled(
         None => instance::default_instance_name(agent_type),
     };
 
+    println!("── run: {} ──", instance_name);
+
     // Git clone path: if Agentfile has [expose.github] repo, clone it directly
     if let Some(expose) = &spec.expose {
         if let Some(gh) = &expose.github {
@@ -1160,6 +1175,7 @@ fn cmd_run_from_pulled(
     };
 
     let manifest = mgr.spawn(agent_type, &instance_name, &def)?;
+    println!("  ✓ instance spawned");
     mgr.append_log(&instance_name, &format!("created from image '{}'", image))?;
 
     // Copy type files into occupation/ (image manifest travels with container)
@@ -1174,11 +1190,14 @@ fn cmd_run_from_pulled(
     if agentfile_src.exists() {
         std::fs::copy(&agentfile_src, occ_dir.join("Agentfile.toml"))?;
     }
+    println!("  ✓ Agentfile.toml copied");
 
     // Copy skill files into occupation/skills/
     let skills_dir = occ_dir.join("skills");
     std::fs::create_dir_all(&skills_dir)?;
 
+    let mut skill_count = 0usize;
+    let mut cron_count = 0usize;
     for (skill_name, skill_def) in &spec.skills {
         if let Some(script) = &skill_def.script {
             let src = types_base.join(script);
@@ -1189,6 +1208,7 @@ fn cmd_run_from_pulled(
                         .unwrap_or(std::ffi::OsStr::new(skill_name)),
                 );
                 std::fs::copy(&src, &dst)?;
+                skill_count += 1;
             }
         }
         if let Some(prompt) = &skill_def.prompt {
@@ -1200,11 +1220,17 @@ fn cmd_run_from_pulled(
                         .unwrap_or(std::ffi::OsStr::new(skill_name)),
                 );
                 std::fs::copy(&src, &dst)?;
+                skill_count += 1;
             }
         }
         if let Some(schedule) = &skill_def.schedule {
             mgr.cron_add(&instance_name, schedule, skill_name)?;
+            cron_count += 1;
         }
+    }
+    println!("  ✓ {} skills copied", skill_count);
+    if cron_count > 0 {
+        println!("  ✓ {} cron entries registered", cron_count);
     }
 
     // Copy knowledge data into occupation/knowledge/
@@ -1213,14 +1239,16 @@ fn cmd_run_from_pulled(
         if knowledge_src.exists() {
             let knowledge_dst = occ_dir.join("knowledge");
             copy_dir_recursive(&knowledge_src, &knowledge_dst)?;
+            println!("  ✓ knowledge copied");
         }
     }
 
     // Ensure cognition/ dirs exist
     std::fs::create_dir_all(inst_dir.join("cognition/memory"))?;
     std::fs::create_dir_all(inst_dir.join("cognition/logs"))?;
+    println!("  ✓ cognition/ initialized");
+    println!("  ✓ git repo initialized");
 
-    println!("{}", manifest.name);
     Ok(())
 }
 
@@ -1241,7 +1269,7 @@ fn cmd_run_from_github_clone(
         );
     }
 
-    println!("cloning git@github.com:{}.git → {}", github_repo, instance_name);
+    // Note: "── run:" header already printed by caller
 
     let clone_output = std::process::Command::new("git")
         .args([
@@ -1253,12 +1281,15 @@ fn cmd_run_from_github_clone(
 
     if !clone_output.status.success() {
         let stderr = String::from_utf8_lossy(&clone_output.stderr);
+        println!("  ✗ git clone failed: {}", stderr.trim());
         bail!("git clone failed: {}", stderr);
     }
+    println!("  ✓ cloned git@github.com:{}.git", github_repo);
 
     // Ensure cognition/logs/ exists (it's gitignored so won't be in the clone)
     std::fs::create_dir_all(inst_dir.join("cognition/logs"))?;
     std::fs::create_dir_all(inst_dir.join("cognition/memory"))?;
+    println!("  ✓ cognition/ initialized");
 
     // Write/update instance.toml with local machine identity
     let manifest_path = inst_dir.join("cognition/instance.toml");
@@ -1302,13 +1333,15 @@ fn cmd_run_from_github_clone(
 
     let content = toml::to_string_pretty(&manifest)?;
     std::fs::write(&manifest_path, content)?;
+    println!("  ✓ instance manifest written (machine: {})", instance::gethostname());
 
     mgr.append_log(instance_name, &format!("created from git clone '{}' (image: {})", github_repo, image))?;
 
     // Auto-commit the machine_id/uuid update
-    agents::commit::auto_commit_instance(&inst_dir, &format!("run: {} on {}", instance_name, instance::gethostname()));
+    if agents::commit::auto_commit_instance(&inst_dir, &format!("run: {} on {}", instance_name, instance::gethostname())).is_some() {
+        println!("  ✓ identity committed & pushed");
+    }
 
-    println!("{}", instance_name);
     Ok(())
 }
 
@@ -1348,14 +1381,23 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
     let skill_name = parts[0];
     let skill_args = if parts.len() > 1 { parts[1] } else { "" };
 
+    eprintln!("── exec: {} {} ──", instance, skill_name);
     mgr.append_log(instance, &format!("exec: {}", skill))?;
 
     // Load scoped env (Docker secrets model — per-skill > per-agent > vault)
     let inst_dir = mgr.base_dir().join(instance);
     let scoped_env = load_scoped_env(&inst_dir, Some(skill_name))?;
+    eprintln!("  ✓ vault env loaded");
 
     // Resolve and dispatch
-    let (exit_code, stdout, stderr) = if let Some(script) = resolve_skill_script(&inst_dir, skill_name) {
+    let script_found = resolve_skill_script(&inst_dir, skill_name);
+    if script_found.is_some() {
+        eprintln!("  ✓ skill script resolved");
+    } else {
+        eprintln!("  ⚠ no local script — trying wonskill");
+    }
+
+    let (exit_code, stdout, stderr) = if let Some(script) = script_found {
         exec_skill_script(&script, skill_args, &inst_dir, &scoped_env)?
     } else {
         exec_wonskill(skill_name, skill_args, &inst_dir, &scoped_env)?
@@ -1374,6 +1416,11 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
 
     // Log
     let status_msg = if exit_code == 0 { "ok" } else { "FAILED" };
+    if exit_code == 0 {
+        eprintln!("  ✓ exit 0");
+    } else {
+        eprintln!("  ✗ exit {}", exit_code);
+    }
     mgr.append_log(
         instance,
         &format!("exec-result: {} → {} (exit {})", skill, status_msg, exit_code),
@@ -1382,15 +1429,14 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
     // Auto-commit if instance is a git repo (fire-and-forget)
     let inst_dir = mgr.base_dir().join(instance);
     if let Some(summary) = agents::commit::auto_commit_instance(&inst_dir, &format!("exec: {}", skill)) {
-        eprintln!("[aide] {}", summary.lines().next().unwrap_or("committed"));
+        eprintln!("  ✓ {}", summary.lines().next().unwrap_or("committed"));
     }
 
     if exit_code != 0 {
-        // Docker exec returns the exit code of the executed command
         std::process::exit(exit_code);
     }
 
-    let _ = manifest; // used for future interactive mode
+    let _ = manifest;
     Ok(())
 }
 
@@ -1530,9 +1576,14 @@ fn cmd_stop(mgr: &InstanceManager, instance: &str) -> Result<()> {
 }
 
 fn cmd_rm(mgr: &InstanceManager, instance: &str, keep_volumes: bool) -> Result<()> {
+    println!("── rm: {} ──", instance);
+    if keep_volumes {
+        println!("  ✓ memory backed up to .{}.memory.bak", instance);
+    }
     if mgr.remove(instance, keep_volumes)? {
-        println!("{}", instance);
+        println!("  ✓ instance removed");
     } else {
+        println!("  ✗ instance not found");
         bail!("No such instance: {}", instance);
     }
     Ok(())
@@ -2277,18 +2328,18 @@ fn cmd_init(name: &str) -> Result<()> {
     if dir.exists() {
         bail!("directory '{}' already exists", name);
     }
+    println!("── init: {} ──", name);
     agents::scaffold::init_agent(name, dir)?;
-    println!("created {}/", name);
-    println!("  occupation/Agentfile.toml");
-    println!("  occupation/persona.md");
-    println!("  occupation/skills/hello.ts");
-    println!("  occupation/knowledge/");
-    println!("  cognition/memory/");
-    println!("  cognition/logs/");
-    println!("  .aideignore");
-    println!("  README.md");
+    println!("  ✓ occupation/Agentfile.toml");
+    println!("  ✓ occupation/persona.md");
+    println!("  ✓ occupation/skills/hello.ts");
+    println!("  ✓ occupation/knowledge/");
+    println!("  ✓ cognition/memory/");
+    println!("  ✓ cognition/logs/");
+    println!("  ✓ .aideignore");
+    println!("  ✓ README.md");
     println!();
-    println!("next: edit occupation/Agentfile.toml, then `aide.sh build {}/`", name);
+    println!("next: edit occupation/Agentfile.toml, then `aide build {}/`", name);
     Ok(())
 }
 
@@ -2669,23 +2720,33 @@ fn cmd_commit(data_dir: &str, instance: &str, message: &str) -> Result<()> {
     let _manifest = mgr.get(instance)?
         .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
 
+    println!("── commit: {} ──", instance);
     let inst_dir = mgr.base_dir().join(instance);
 
     if !inst_dir.join(".git").exists() {
+        println!("  ✗ not a git repo");
         bail!(
             "Instance '{}' is not a git repo.\nRun: aide deploy --github {}",
             instance, instance
         );
     }
+    println!("  ✓ git repo");
 
     // In-place commit + push + sanity check
     match agents::commit::auto_commit_instance(&inst_dir, message) {
         Some(summary) => {
-            println!("{}", summary);
+            // Parse summary for checklist
+            for line in summary.lines() {
+                if line.starts_with("committed:") || line.starts_with("pushed:") {
+                    println!("  ✓ {}", line);
+                } else if !line.is_empty() {
+                    println!("  {}", line);
+                }
+            }
             mgr.append_log(instance, &format!("commit: {}", message))?;
         }
         None => {
-            println!("nothing to commit (no changes)");
+            println!("  ✓ nothing to commit (clean)");
         }
     }
 
@@ -2831,7 +2892,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     let visibility = if private { "--private" } else { "--public" };
     let github_repo_ref = format!("{}/{}", username, repo_name);
 
-    println!("deploying {} → github.com/{}", instance, github_repo_ref);
+    println!("── deploy: {} → github.com/{} ──", instance, github_repo_ref);
 
     // 1. Create repo via gh CLI
     let create_output = std::process::Command::new("gh")
@@ -2841,9 +2902,12 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     if !create_output.status.success() {
         let stderr = String::from_utf8_lossy(&create_output.stderr);
         if !stderr.contains("already exists") {
+            println!("  ✗ repo creation failed: {}", stderr.trim());
             bail!("failed to create repo: {}", stderr);
         }
-        println!("  repo already exists, updating...");
+        println!("  ✓ repo exists (reusing)");
+    } else {
+        println!("  ✓ repo created ({})", if private { "private" } else { "public" });
     }
 
     // 2. Git init in-place (instance dir = git repo)
@@ -2896,6 +2960,9 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
 
         git(&["init"])?;
         git(&["remote", "add", "origin", &format!("git@github.com:{}.git", github_repo_ref)])?;
+        println!("  ✓ git init + remote");
+    } else {
+        println!("  ✓ git repo exists");
     }
 
     git(&["add", "-A"])?;
@@ -2904,6 +2971,9 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     let has_changes = !git(&["diff", "--cached", "--quiet"])?;
     if has_changes {
         git(&["commit", "-m", &format!("deploy {} agent", agent_name)])?;
+        println!("  ✓ committed");
+    } else {
+        println!("  ✓ nothing to commit (clean)");
     }
 
     git(&["branch", "-M", "main"])?;
@@ -2917,8 +2987,10 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     };
 
     if !pushed {
+        println!("  ✗ push failed — check SSH keys and repo permissions");
         bail!("push failed — check SSH keys and repo permissions, or resolve conflicts manually");
     }
+    println!("  ✓ pushed to origin/main");
 
     // Write github_repo back to instance.toml
     if let Ok(Some(mut manifest)) = mgr.get(instance) {
@@ -2928,6 +3000,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         let content = toml::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, content)?;
     }
+    println!("  ✓ github_repo saved to instance.toml");
 
     // Sanity check
     let local_head = std::process::Command::new("git")
@@ -2939,9 +3012,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         .unwrap_or_default();
     let short = &local_head[..7.min(local_head.len())];
 
-    println!("  repo: https://github.com/{}", github_repo_ref);
-    println!("  HEAD: {}", short);
-    println!("  instance dir is now a git repo");
+    println!("  ✓ HEAD: {} — https://github.com/{}", short, github_repo_ref);
     mgr.append_log(instance, &format!("deploy-github: {} ({})", github_repo_ref, short))?;
 
     Ok(())

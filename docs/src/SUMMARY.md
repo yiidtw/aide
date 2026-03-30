@@ -38,3 +38,4 @@
 - [Execution Modes](./arch/semantic-injection.md)
 - [Docker Comparison](./arch/docker-comparison.md)
 - [Git-Native Agent Methodology](./arch/git-native.md)
+- [Roadmap: Local → Edge](./arch/roadmap.md)

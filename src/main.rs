@@ -3013,6 +3013,18 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         step!(git(&["remote", "add", "origin", &format!("git@github.com:{}.git", github_repo_ref)])?, "remote origin set");
     } else {
         println!("  ✓ git repo exists");
+        // Ensure remote is set even if git already initialized
+        let has_remote = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(&inst_dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_remote {
+            step!(git(&["remote", "add", "origin", &format!("git@github.com:{}.git", github_repo_ref)])?, "remote origin set");
+        } else {
+            println!("  ✓ remote origin configured");
+        }
     }
 
     git(&["add", "-A"])?;

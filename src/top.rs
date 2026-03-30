@@ -178,6 +178,8 @@ fn ui(
         .map(|(i, inst)| {
             let status_style = match inst.status {
                 crate::agents::instance::InstanceStatus::Active => Style::default().fg(Color::Green),
+                crate::agents::instance::InstanceStatus::Idle => Style::default().fg(Color::Yellow),
+                crate::agents::instance::InstanceStatus::Error => Style::default().fg(Color::Red).add_modifier(ratatui::style::Modifier::BOLD),
                 crate::agents::instance::InstanceStatus::Stopped => Style::default().fg(Color::Red),
             };
             let last = inst.last_activity.as_deref().unwrap_or("\u{2014}");

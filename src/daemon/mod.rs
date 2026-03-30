@@ -3,6 +3,7 @@ use chrono::{Datelike, Timelike};
 use std::path::{Path, PathBuf};
 use tokio::time::Duration;
 use tracing::{error, info, warn};
+use wait_timeout::ChildExt;
 
 /// Return the path to `~/.aide/daemon.pid`.
 fn pid_file_path() -> PathBuf {
@@ -324,6 +325,8 @@ impl Daemon {
 // ─── Cron ticker logic ───
 
 /// Run a single cron tick: check all instances for due cron entries and execute them.
+/// Enforces max_timeout and max_retry from [limits] in Agentfile.toml.
+/// On failure, opens a GitHub issue on the instance's repo if configured.
 fn cron_tick(data_dir: &str) -> Result<()> {
     let mgr = InstanceManager::new(data_dir);
     let instances = mgr.list()?;
@@ -349,6 +352,22 @@ fn cron_tick(data_dir: &str) -> Result<()> {
         };
 
         let inst_dir = mgr.base_dir().join(&inst.name);
+
+        // Load limits from Agentfile.toml
+        let (timeout_secs, max_retry) = match AgentfileSpec::load(&inst_dir) {
+            Ok(spec) => {
+                let t = spec.limits.as_ref().map(|l| l.max_timeout).unwrap_or(300);
+                let r = spec.limits.as_ref().map(|l| l.max_retry).unwrap_or(0);
+                (t, r)
+            }
+            Err(_) => (300, 0),
+        };
+
+        // Load github_repo for failure alerting
+        let github_repo = mgr.get(&inst.name)
+            .ok()
+            .flatten()
+            .and_then(|m| m.github_repo);
 
         for entry in &cron_entries {
             if !cron_matches_now(&entry.schedule, &now) {
@@ -376,12 +395,45 @@ fn cron_tick(data_dir: &str) -> Result<()> {
                 warn!(error = %e, "failed to append cron log");
             }
 
-            // Execute the skill
-            let result = exec_cron_skill(&inst_dir, &entry.skill, &vault_env);
+            // Execute with retry
+            let mut last_result = None;
+            let attempts = max_retry + 1; // 0 retries = 1 attempt
+            for attempt in 1..=attempts {
+                if attempt > 1 {
+                    let backoff = std::time::Duration::from_secs(2u64.pow(attempt - 1));
+                    info!(
+                        instance = %inst.name,
+                        skill = %entry.skill,
+                        attempt,
+                        backoff_secs = backoff.as_secs(),
+                        "retrying after backoff"
+                    );
+                    let _ = mgr.append_log(
+                        &inst.name,
+                        &format!("cron-retry: {} attempt {}/{}", entry.skill, attempt, attempts),
+                    );
+                    std::thread::sleep(backoff);
+                }
 
+                let result = exec_cron_skill(&inst_dir, &entry.skill, &vault_env, timeout_secs);
+
+                match &result {
+                    Ok((exit_code, _, _)) if *exit_code == 0 => {
+                        last_result = Some(result);
+                        break; // success, no more retries
+                    }
+                    _ => {
+                        last_result = Some(result);
+                        // continue to next attempt if retries remain
+                    }
+                }
+            }
+
+            // Process final result
+            let result = last_result.unwrap();
             match &result {
                 Ok((exit_code, stdout, stderr)) => {
-                    let status = if *exit_code == 0 { "ok" } else { "fail" };
+                    let status = if *exit_code == 0 { "ok" } else { "FAILED" };
                     info!(
                         instance = %inst.name,
                         skill = %entry.skill,
@@ -410,6 +462,13 @@ fn cron_tick(data_dir: &str) -> Result<()> {
                             &format!("cron-stderr: {}: {}", entry.skill, truncated.trim()),
                         );
                     }
+                    // Alert on non-zero exit after all retries exhausted
+                    if *exit_code != 0 {
+                        alert_cron_failure(
+                            &inst.name, &entry.skill, github_repo.as_deref(),
+                            &format!("exit code {} after {} attempt(s)\n\nstderr:\n```\n{}\n```", exit_code, attempts, stderr.chars().take(1000).collect::<String>()),
+                        );
+                    }
                 }
                 Err(e) => {
                     error!(
@@ -420,6 +479,11 @@ fn cron_tick(data_dir: &str) -> Result<()> {
                     );
                     let log_msg = format!("cron-result: {} → error: {}", entry.skill, e);
                     let _ = mgr.append_log(&inst.name, &log_msg);
+                    // Alert on execution failure
+                    alert_cron_failure(
+                        &inst.name, &entry.skill, github_repo.as_deref(),
+                        &format!("{}", e),
+                    );
                 }
             }
 
@@ -436,6 +500,44 @@ fn cron_tick(data_dir: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Alert on cron skill failure by opening a GitHub issue on the instance's repo.
+/// Silent no-op if no github_repo is configured or gh CLI is unavailable.
+fn alert_cron_failure(instance: &str, skill: &str, github_repo: Option<&str>, details: &str) {
+    let Some(repo) = github_repo else {
+        warn!(instance, skill, "cron failure alert skipped: no github_repo configured");
+        return;
+    };
+
+    let title = format!("[aide] cron failure: {} on {}", skill, instance);
+    let body = format!(
+        "Automated alert from aide daemon.\n\n\
+         - **Instance**: {}\n\
+         - **Skill**: {}\n\
+         - **Time**: {}\n\n\
+         ## Details\n\n{}\n\n\
+         ---\n_This issue was opened automatically by `aide up` cron executor._",
+        instance, skill, chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), details
+    );
+
+    let result = std::process::Command::new("gh")
+        .args(["issue", "create", "--repo", repo, "--title", &title, "--body", &body, "--label", "aide-alert"])
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {
+            let url = String::from_utf8_lossy(&output.stdout);
+            info!(instance, skill, url = url.trim(), "opened failure alert issue");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(instance, skill, error = stderr.trim().to_string(), "failed to open alert issue");
+        }
+        Err(e) => {
+            warn!(instance, skill, error = %e, "gh CLI not available for alert");
+        }
+    }
 }
 
 /// Check if a 5-field cron expression matches the given local time.
@@ -514,11 +616,12 @@ fn find_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Execute a skill script for a cron entry.
+/// Execute a skill script for a cron entry, with timeout enforcement.
 fn exec_cron_skill(
     inst_dir: &Path,
     skill_name: &str,
     env: &[(String, String)],
+    timeout_secs: u64,
 ) -> Result<(i32, String, String)> {
     // Try occupation/skills/ first, then skills/ for backward compat
     let script = find_skill_script(inst_dir, skill_name);
@@ -549,15 +652,42 @@ fn exec_cron_skill(
         cmd.env(k, v);
     }
 
-    let output = cmd
-        .output()
-        .with_context(|| format!("failed to execute skill script: {}", script.display()))?;
+    // Spawn as child process so we can enforce timeout
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to spawn skill script: {}", script.display()))?;
 
-    Ok((
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
-    ))
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => {
+            // Process exited within timeout
+            let stdout = child.stdout.take().map(|mut s| {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                buf
+            }).unwrap_or_default();
+            let stderr = child.stderr.take().map(|mut s| {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                buf
+            }).unwrap_or_default();
+            Ok((status.code().unwrap_or(-1), stdout, stderr))
+        }
+        Ok(None) => {
+            // Timeout — kill the process
+            warn!(skill = skill_name, timeout_secs, "skill execution timed out, killing process");
+            let _ = child.kill();
+            let _ = child.wait(); // reap zombie
+            anyhow::bail!("skill '{}' timed out after {}s", skill_name, timeout_secs)
+        }
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(e).context(format!("failed waiting on skill script: {}", script.display()))
+        }
+    }
 }
 
 /// Load vault environment variables by decrypting vault.age with vault.key.

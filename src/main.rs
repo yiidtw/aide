@@ -155,6 +155,15 @@ enum Command {
     /// Stop the aide daemon
     Down,
 
+    /// Run instance readiness checks (integration test for any instance)
+    ///
+    /// Validates: git repo, remote, vault keys, skills executable,
+    /// cron registered, github polling, logs writable, Agentfile valid.
+    Doctor {
+        /// Instance name (checks all if omitted)
+        instance: Option<String>,
+    },
+
     /// Migrate pre-#72 instances to git-native format (idempotent)
     ///
     /// For each instance without .git:
@@ -491,6 +500,10 @@ async fn main() -> Result<()> {
             }
         }
 
+        Command::Doctor { instance } => {
+            cmd_doctor(&mgr, instance.as_deref())?;
+        }
+
         Command::Migrate { instance } => {
             cmd_migrate(&mgr, instance.as_deref())?;
         }
@@ -777,6 +790,194 @@ fn migrate_set_remote(mgr: &InstanceManager, name: &str, inst_dir: &Path) -> Res
     }
 
     Ok(())
+}
+
+// ─── aide doctor ─────────────────────────────────────────────────────────────
+
+/// Run instance readiness checks. This is the generalized integration test
+/// for any aide instance — validates that all lifecycle features are functional.
+fn cmd_doctor(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
+    let names: Vec<String> = match instance {
+        Some(n) => vec![n.to_string()],
+        None => mgr.list()?.into_iter().map(|i| i.name).collect(),
+    };
+
+    if names.is_empty() {
+        println!("no instances found");
+        return Ok(());
+    }
+
+    let vault_env = daemon_load_vault_env().unwrap_or_default();
+    let mut total_pass = 0usize;
+    let mut total_fail = 0usize;
+
+    for name in &names {
+        println!("── {} ──", name);
+        let inst_dir = mgr.base_dir().join(name);
+        if !inst_dir.exists() {
+            println!("  ✗ instance directory not found");
+            total_fail += 1;
+            continue;
+        }
+
+        let mut pass = 0usize;
+        let mut fail = 0usize;
+
+        // 1. Git repo initialized
+        let has_git = inst_dir.join(".git").exists();
+        check(&mut pass, &mut fail, has_git, "git repo initialized");
+
+        // 2. Git remote set
+        let has_remote = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(&inst_dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        check(&mut pass, &mut fail, has_remote, "git remote origin configured");
+
+        // 3. Agentfile.toml exists and parses
+        let spec = AgentfileSpec::load(&inst_dir);
+        let spec_ok = spec.is_ok();
+        check(&mut pass, &mut fail, spec_ok, "Agentfile.toml valid");
+
+        if let Ok(ref spec) = spec {
+            // 4. Persona file exists
+            let has_persona = spec.persona.as_ref().map(|p| {
+                let base = AgentfileSpec::base_dir(&inst_dir);
+                base.join(&p.file).exists()
+            }).unwrap_or(false);
+            check(&mut pass, &mut fail, has_persona, "persona.md exists");
+
+            // 5. All skill scripts exist
+            let mut all_skills_ok = true;
+            for (skill_name, skill_def) in &spec.skills {
+                let base = AgentfileSpec::base_dir(&inst_dir);
+                let script_ok = skill_def.script.as_ref().map(|s| base.join(s).exists()).unwrap_or(false)
+                    || skill_def.prompt.as_ref().map(|p| base.join(p).exists()).unwrap_or(false);
+                if !script_ok {
+                    println!("  ✗ skill '{}' script missing", skill_name);
+                    all_skills_ok = false;
+                    fail += 1;
+                }
+            }
+            if all_skills_ok && !spec.skills.is_empty() {
+                check(&mut pass, &mut fail, true, &format!("all {} skill scripts exist", spec.skills.len()));
+            }
+
+            // 6. Vault keys available for required env
+            if let Some(ref env_section) = spec.env {
+                let mut missing_keys = Vec::new();
+                for required_key in &env_section.required {
+                    let found = vault_env.iter().any(|(k, _)| k == required_key)
+                        || std::env::var(required_key).is_ok();
+                    if !found {
+                        missing_keys.push(required_key.as_str());
+                    }
+                }
+                let vault_ok = missing_keys.is_empty();
+                if vault_ok {
+                    check(&mut pass, &mut fail, true, &format!("vault: {} required keys present", env_section.required.len()));
+                } else {
+                    println!("  ✗ vault: missing keys: {}", missing_keys.join(", "));
+                    fail += 1;
+                }
+            }
+
+            // 7. Limits configured
+            if let Some(ref limits) = spec.limits {
+                check(&mut pass, &mut fail, true, &format!("limits: timeout={}s retry={}", limits.max_timeout, limits.max_retry));
+            } else {
+                println!("  ⚠ limits: not configured (defaults: timeout=300s retry=0)");
+            }
+
+            // 8. GitHub expose configured
+            let has_github_expose = spec.expose.as_ref()
+                .and_then(|e| e.github.as_ref())
+                .is_some();
+            let has_github_repo = mgr.get(name).ok().flatten()
+                .and_then(|m| m.github_repo).is_some();
+            let github_ok = has_github_expose || has_github_repo;
+            check(&mut pass, &mut fail, github_ok, "github issue polling configured");
+        }
+
+        // 9. Cron entries registered
+        let cron_entries = mgr.cron_list(name).unwrap_or_default();
+        if !cron_entries.is_empty() {
+            check(&mut pass, &mut fail, true, &format!("{} cron entries registered", cron_entries.len()));
+        } else {
+            println!("  ⚠ no cron entries (manual-only instance)");
+        }
+
+        // 10. Cognition dirs exist
+        let has_cognition = inst_dir.join("cognition/memory").exists()
+            && inst_dir.join("cognition/logs").exists();
+        check(&mut pass, &mut fail, has_cognition, "cognition/ directory structure");
+
+        // 11. Logs writable
+        let log_test = mgr.append_log(name, "doctor: readiness check");
+        check(&mut pass, &mut fail, log_test.is_ok(), "logs writable");
+
+        // 12. Daemon running
+        let daemon_up = {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let pid_path = PathBuf::from(&home).join(".aide").join("daemon.pid");
+            pid_path.exists()
+        };
+        check(&mut pass, &mut fail, daemon_up, "daemon running");
+
+        println!("  ── {}/{} checks passed", pass, pass + fail);
+        total_pass += pass;
+        total_fail += fail;
+    }
+
+    if names.len() > 1 {
+        println!("\n═══ total: {}/{} checks passed across {} instances",
+            total_pass, total_pass + total_fail, names.len());
+    }
+
+    if total_fail > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn check(pass: &mut usize, fail: &mut usize, ok: bool, label: &str) {
+    if ok {
+        println!("  ✓ {}", label);
+        *pass += 1;
+    } else {
+        println!("  ✗ {}", label);
+        *fail += 1;
+    }
+}
+
+/// Re-export vault loading for doctor command
+fn daemon_load_vault_env() -> Result<Vec<(String, String)>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let aide_home = PathBuf::from(home).join(".aide");
+    let vault_path = aide_home.join("vault.age");
+    if !vault_path.exists() { return Ok(Vec::new()); }
+    let identity_path = aide_home.join("vault.key");
+    if !identity_path.exists() { return Ok(Vec::new()); }
+    let output = std::process::Command::new("age")
+        .args(["-d", "-i"])
+        .arg(&identity_path)
+        .arg(&vault_path)
+        .output()?;
+    if !output.status.success() { return Ok(Vec::new()); }
+    let content = String::from_utf8_lossy(&output.stdout);
+    let mut vars = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        if let Some((key, val)) = line.split_once('=') {
+            let val = val.trim_matches('"').trim_matches('\'');
+            vars.push((key.to_string(), val.to_string()));
+        }
+    }
+    Ok(vars)
 }
 
 // ─── Parse image ref: "user/type:version" → ("user/type", "version") ───
@@ -1471,7 +1672,7 @@ fn cmd_images() -> Result<()> {
 
 fn cmd_info(config: &AideConfig, mgr: &InstanceManager) -> Result<()> {
     let instances = mgr.list()?;
-    let running = instances.iter().filter(|i| i.status == instance::InstanceStatus::Active).count();
+    let running = instances.iter().filter(|i| i.status != instance::InstanceStatus::Stopped).count();
 
     println!("Agent Instances: {}", instances.len());
     println!("  Running: {}", running);

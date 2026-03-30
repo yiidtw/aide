@@ -39,6 +39,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 base64 = "0.22.1"
 uuid = { version = "1.22.0", features = ["v4"] }
+wait-timeout = "0.2"
 
 [profile.release]
 strip = true

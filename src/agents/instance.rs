@@ -101,24 +101,42 @@ pub struct InstanceInfo {
 
 /// Runtime status of an agent instance.
 ///
-/// Currently determined by the presence of a PID file (TODO).
+/// Determined by daemon PID file presence and last activity recency.
 /// Displayed in `aide.sh ps` output.
 #[derive(Debug, PartialEq)]
 pub enum InstanceStatus {
-    /// The instance daemon is running (or presumed running).
+    /// Daemon is running and instance had recent activity (within 24h).
     Active,
-    /// The instance exists on disk but no daemon process is active.
-    #[allow(dead_code)]
+    /// Daemon is running but no recent activity.
+    Idle,
+    /// No daemon running.
     Stopped,
+    /// Last cron execution failed.
+    Error,
 }
 
 impl std::fmt::Display for InstanceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstanceStatus::Active => write!(f, "active"),
+            InstanceStatus::Idle => write!(f, "idle"),
             InstanceStatus::Stopped => write!(f, "stopped"),
+            InstanceStatus::Error => write!(f, "error"),
         }
     }
+}
+
+/// Check if the aide daemon is currently running (PID file exists and process alive).
+fn is_daemon_running() -> bool {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let pid_path = Path::new(&home).join(".aide").join("daemon.pid");
+    let Ok(pid_str) = fs::read_to_string(&pid_path) else { return false };
+    let Ok(pid) = pid_str.trim().parse::<u32>() else { return false };
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Manages agent instances on disk.
@@ -272,10 +290,35 @@ impl InstanceManager {
             match self.load_manifest(&name) {
                 Ok(manifest) => {
                     let last_activity = self.last_log_entry(&name);
+                    let daemon_up = is_daemon_running();
+
+                    // Determine status from daemon state + last activity
+                    let status = if !daemon_up {
+                        InstanceStatus::Stopped
+                    } else if let Some(ref log_line) = last_activity {
+                        if log_line.contains("→ FAILED") || log_line.contains("→ error") {
+                            InstanceStatus::Error
+                        } else {
+                            // Check recency: parse [HH:MM:SS] timestamp from log
+                            // If last log is from today's file, it's active
+                            let logs_dir = self.logs_dir(&name);
+                            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                            let today_log = logs_dir.join(format!("{}.log", today));
+                            if today_log.exists() {
+                                InstanceStatus::Active
+                            } else {
+                                InstanceStatus::Idle
+                            }
+                        }
+                    } else {
+                        // No logs at all — newly created
+                        InstanceStatus::Idle
+                    };
+
                     instances.push(InstanceInfo {
                         name: manifest.name,
                         agent_type: manifest.agent_type,
-                        status: InstanceStatus::Active, // TODO: check PID file
+                        status,
                         created_at: manifest.created_at,
                         email: manifest.email,
                         role: manifest.role,

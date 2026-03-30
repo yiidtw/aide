@@ -22,7 +22,7 @@ use agents::instance::{self, InstanceManager};
 use config::AideConfig;
 
 #[derive(Parser)]
-#[command(name = "aide", about = "Docker for AI agents — aide.sh", version)]
+#[command(name = "aide", about = "aide — distributed autonomous agent runtime", version)]
 struct Cli {
     /// Path to aide.toml config file
     #[arg(short, long, default_value = "aide.toml")]
@@ -154,6 +154,20 @@ enum Command {
     },
     /// Stop the aide daemon
     Down,
+
+    /// Migrate pre-#72 instances to git-native format (idempotent)
+    ///
+    /// For each instance without .git:
+    ///   1. git init
+    ///   2. git remote add origin (from instance.toml github_repo, or creates gh repo)
+    ///   3. git add -A && git commit
+    ///   4. git push -u origin main
+    ///
+    /// Safe to run multiple times — skips already-migrated instances.
+    Migrate {
+        /// Instance name to migrate (migrates all if omitted)
+        instance: Option<String>,
+    },
 
     // ─── Agent-specific extensions ───
 
@@ -477,6 +491,10 @@ async fn main() -> Result<()> {
             }
         }
 
+        Command::Migrate { instance } => {
+            cmd_migrate(&mgr, instance.as_deref())?;
+        }
+
         // ─── Agent extensions ───
         Command::Cron { action } => match action {
             CronAction::Add { instance, schedule, skill } => {
@@ -573,6 +591,189 @@ async fn main() -> Result<()> {
         | Command::Commit { .. }
         | Command::Clean { .. }
         | Command::Cost => unreachable!(),
+    }
+
+    Ok(())
+}
+
+// ─── aide migrate ────────────────────────────────────────────────────────────
+
+/// Migrate pre-#72 instances to git-native format. Idempotent.
+///
+/// For each instance:
+///   1. Skip if .git already exists
+///   2. git init
+///   3. Set remote: use github_repo from instance.toml if present,
+///      otherwise create yiidtw/aide-<name> via `gh repo create`
+///   4. git add -A && git commit -m "chore: migrate to git-native instance"
+///   5. git push -u origin main
+fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
+    let names: Vec<String> = match instance {
+        Some(n) => vec![n.to_string()],
+        None => mgr.list()?.into_iter().map(|i| i.name).collect(),
+    };
+
+    if names.is_empty() {
+        println!("no instances found");
+        return Ok(());
+    }
+
+    for name in &names {
+        let inst_dir = mgr.base_dir().join(name);
+        if !inst_dir.exists() {
+            println!("{}: not found, skipping", name);
+            continue;
+        }
+
+        // Step 1: idempotent check
+        if inst_dir.join(".git").exists() {
+            // Already git-native — verify remote is set, set if missing
+            let has_remote = std::process::Command::new("git")
+                .args(["remote", "get-url", "origin"])
+                .current_dir(&inst_dir)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if has_remote {
+                println!("{}: already git-native with remote ✓", name);
+            } else {
+                println!("{}: git-native but missing remote — setting up...", name);
+                migrate_set_remote(mgr, name, &inst_dir)?;
+                println!("{}: remote set ✓", name);
+            }
+            continue;
+        }
+
+        println!("{}: migrating...", name);
+
+        // Step 2: git init
+        let ok = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&inst_dir)
+            .status()
+            .context("git init failed")?
+            .success();
+        if !ok {
+            println!("{}: git init failed, skipping", name);
+            continue;
+        }
+
+        // Step 3: set remote
+        if let Err(e) = migrate_set_remote(mgr, name, &inst_dir) {
+            println!("{}: remote setup failed: {} (continuing without push)", name, e);
+        }
+
+        // Step 4: initial commit
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&inst_dir)
+            .status()
+            .ok();
+
+        let has_staged = std::process::Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(&inst_dir)
+            .status()
+            .map(|s| !s.success()) // non-zero = has staged changes
+            .unwrap_or(false);
+
+        if has_staged {
+            let committed = std::process::Command::new("git")
+                .args(["commit", "-m", "chore: migrate to git-native instance"])
+                .current_dir(&inst_dir)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !committed {
+                println!("{}: commit failed", name);
+                continue;
+            }
+        }
+
+        // Step 5: push
+        let has_remote = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(&inst_dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if has_remote {
+            let pushed = std::process::Command::new("git")
+                .args(["push", "-u", "origin", "main"])
+                .current_dir(&inst_dir)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if pushed {
+                println!("{}: migrated and pushed ✓", name);
+            } else {
+                println!("{}: migrated (push failed — check remote auth)", name);
+            }
+        } else {
+            println!("{}: migrated locally (no remote set)", name);
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve or create the GitHub remote for an instance.
+/// Uses github_repo from instance.toml if present; otherwise creates
+/// yiidtw/aide-<name> via `gh repo create`.
+fn migrate_set_remote(mgr: &InstanceManager, name: &str, inst_dir: &Path) -> Result<()> {
+    // Try to get repo from manifest
+    let repo = mgr.get(name)
+        .ok()
+        .flatten()
+        .and_then(|m| m.github_repo);
+
+    let repo = match repo {
+        Some(r) => r,
+        None => {
+            // Create a new GitHub repo
+            let gh_name = format!("aide-{}", name);
+            let output = std::process::Command::new("gh")
+                .args(["repo", "create", &gh_name, "--private", "--confirm"])
+                .output()
+                .context("gh not found — install GitHub CLI")?;
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr);
+                bail!("gh repo create failed: {}", err.trim());
+            }
+            // gh outputs the repo URL; extract owner/repo
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Store in manifest
+            let full = stdout.trim()
+                .trim_start_matches("https://github.com/")
+                .to_string();
+            // Update instance.toml with new github_repo
+            if let Ok(Some(mut manifest)) = mgr.get(name) {
+                manifest.github_repo = Some(full.clone());
+                let manifest_path = mgr.base_dir().join(name).join("cognition").join("instance.toml");
+                if let Ok(content) = toml::to_string_pretty(&manifest) {
+                    let _ = std::fs::write(&manifest_path, content);
+                }
+            }
+            full
+        }
+    };
+
+    let remote_url = if repo.starts_with("https://") || repo.starts_with("git@") {
+        repo
+    } else {
+        format!("git@github.com:{}.git", repo)
+    };
+
+    let ok = std::process::Command::new("git")
+        .args(["remote", "add", "origin", &remote_url])
+        .current_dir(inst_dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !ok {
+        bail!("git remote add origin {} failed", remote_url);
     }
 
     Ok(())

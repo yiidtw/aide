@@ -21,6 +21,29 @@ use agents::agentfile::AgentfileSpec;
 use agents::instance::{self, InstanceManager};
 use config::AideConfig;
 
+/// Print a checklist step and bail on failure (fail-fast).
+macro_rules! step {
+    ($ok:expr, $label:expr) => {
+        if $ok {
+            println!("  ✓ {}", $label);
+        } else {
+            println!("  ✗ {}", $label);
+            anyhow::bail!("{}", $label);
+        }
+    };
+}
+
+/// Print a checklist step — warn on failure but continue.
+macro_rules! step_warn {
+    ($ok:expr, $pass:expr, $fail:expr) => {
+        if $ok {
+            println!("  ✓ {}", $pass);
+        } else {
+            println!("  ⚠ {}", $fail);
+        }
+    };
+}
+
 #[derive(Parser)]
 #[command(name = "aide", about = "aide — distributed autonomous agent runtime", version)]
 struct Cli {
@@ -662,27 +685,26 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
             continue;
         }
 
-        // Step 2: git init
-        let ok = std::process::Command::new("git")
+        // Step 2: git init (critical — bail on fail)
+        let git_init_ok = std::process::Command::new("git")
             .args(["init", "-b", "main"])
             .current_dir(&inst_dir)
             .status()
             .context("git init failed")?
             .success();
-        if ok {
-            println!("  ✓ git init");
-        } else {
-            println!("  ✗ git init failed");
+        if !git_init_ok {
+            println!("  ✗ git init");
             continue;
         }
+        println!("  ✓ git init");
 
-        // Step 3: set remote
+        // Step 3: set remote (non-critical — warn and continue)
         match migrate_set_remote(mgr, name, &inst_dir) {
             Ok(()) => println!("  ✓ remote origin configured"),
-            Err(e) => println!("  ✗ remote setup: {} (continuing without push)", e),
+            Err(e) => println!("  ⚠ remote setup: {} (continuing without push)", e),
         }
 
-        // Step 4: initial commit
+        // Step 4: initial commit (critical — bail on fail)
         std::process::Command::new("git")
             .args(["add", "-A"])
             .current_dir(&inst_dir)
@@ -703,17 +725,16 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
-            if committed {
-                println!("  ✓ initial commit");
-            } else {
+            if !committed {
                 println!("  ✗ commit failed");
                 continue;
             }
+            println!("  ✓ initial commit");
         } else {
             println!("  ✓ nothing to commit (clean)");
         }
 
-        // Step 5: push
+        // Step 5: push (non-critical — warn on fail)
         let has_remote = std::process::Command::new("git")
             .args(["remote", "get-url", "origin"])
             .current_dir(&inst_dir)
@@ -728,11 +749,7 @@ fn cmd_migrate(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
-            if pushed {
-                println!("  ✓ pushed to origin/main");
-            } else {
-                println!("  ✗ push failed — check remote auth");
-            }
+            step_warn!(pushed, "pushed to origin/main", "push failed — check remote auth");
         } else {
             println!("  ⚠ no remote — skipping push");
         }
@@ -1121,10 +1138,9 @@ fn cmd_run(
 
     println!("── run: {} ──", instance_name);
     let manifest = mgr.spawn(image, &instance_name, def)?;
-    println!("  ✓ instance created from image '{}'", image);
-    println!("  ✓ git repo initialized");
-    mgr.append_log(&instance_name, &format!("created from image '{}'", image))?;
-    println!("  ✓ log initialized");
+    step!(true, format!("instance created from image '{}'", image));
+    step!(mgr.base_dir().join(&instance_name).join(".git").exists(), "git repo initialized");
+    step!(mgr.append_log(&instance_name, &format!("created from image '{}'", image)).is_ok(), "log initialized");
 
     Ok(())
 }
@@ -1279,12 +1295,7 @@ fn cmd_run_from_github_clone(
         ])
         .output()?;
 
-    if !clone_output.status.success() {
-        let stderr = String::from_utf8_lossy(&clone_output.stderr);
-        println!("  ✗ git clone failed: {}", stderr.trim());
-        bail!("git clone failed: {}", stderr);
-    }
-    println!("  ✓ cloned git@github.com:{}.git", github_repo);
+    step!(clone_output.status.success(), format!("cloned git@github.com:{}.git", github_repo));
 
     // Ensure cognition/logs/ exists (it's gitignored so won't be in the clone)
     std::fs::create_dir_all(inst_dir.join("cognition/logs"))?;
@@ -2958,9 +2969,8 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
         };
         std::fs::write(inst_dir.join("README.md"), readme)?;
 
-        git(&["init"])?;
-        git(&["remote", "add", "origin", &format!("git@github.com:{}.git", github_repo_ref)])?;
-        println!("  ✓ git init + remote");
+        step!(git(&["init"])?, "git init");
+        step!(git(&["remote", "add", "origin", &format!("git@github.com:{}.git", github_repo_ref)])?, "remote origin set");
     } else {
         println!("  ✓ git repo exists");
     }
@@ -2970,8 +2980,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
     // Check if there are changes to commit
     let has_changes = !git(&["diff", "--cached", "--quiet"])?;
     if has_changes {
-        git(&["commit", "-m", &format!("deploy {} agent", agent_name)])?;
-        println!("  ✓ committed");
+        step!(git(&["commit", "-m", &format!("deploy {} agent", agent_name)])?, "committed");
     } else {
         println!("  ✓ nothing to commit (clean)");
     }

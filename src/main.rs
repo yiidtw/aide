@@ -979,6 +979,34 @@ fn check(pass: &mut usize, fail: &mut usize, ok: bool, label: &str) {
     }
 }
 
+/// Print config location hints after instance creation.
+fn print_config_hints(inst_dir: &Path, instance_name: &str) {
+    let agentfile = if inst_dir.join("occupation/Agentfile.toml").exists() {
+        inst_dir.join("occupation/Agentfile.toml")
+    } else {
+        inst_dir.join("Agentfile.toml")
+    };
+
+    // Read current limits to show what's configured
+    let limits_info = AgentfileSpec::load(inst_dir)
+        .ok()
+        .and_then(|spec| spec.limits)
+        .map(|l| format!("timeout={}s, retry={}, tokens={}", l.max_timeout, l.max_retry, l.max_tokens))
+        .unwrap_or_else(|| "not set (defaults: timeout=300s, retry=0, tokens=4096)".to_string());
+
+    println!();
+    println!("  configure:");
+    println!("    {}  — skills, env, limits, expose", agentfile.display());
+    println!("    limits: {}", limits_info);
+    println!("    aide.toml [aide] daily_commit_hour = 3  — daily cognition commit (local time)");
+    println!();
+    println!("  next:");
+    println!("    aide deploy --github {}  — create GitHub repo + enable issue polling", instance_name);
+    println!("    aide cron add {} \"0 8 * * *\" <skill>  — schedule a skill", instance_name);
+    println!("    aide doctor {}  — validate readiness", instance_name);
+    println!("    aide up  — start daemon (restart after config changes)");
+}
+
 /// Re-export vault loading for doctor command
 fn daemon_load_vault_env() -> Result<Vec<(String, String)>> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -1142,6 +1170,9 @@ fn cmd_run(
     step!(mgr.base_dir().join(&instance_name).join(".git").exists(), "git repo initialized");
     step!(mgr.append_log(&instance_name, &format!("created from image '{}'", image)).is_ok(), "log initialized");
 
+    let inst_dir = mgr.base_dir().join(&instance_name);
+    print_config_hints(&inst_dir, &manifest.name);
+
     Ok(())
 }
 
@@ -1265,6 +1296,8 @@ fn cmd_run_from_pulled(
     println!("  ✓ cognition/ initialized");
     println!("  ✓ git repo initialized");
 
+    print_config_hints(&inst_dir, &instance_name);
+
     Ok(())
 }
 
@@ -1352,6 +1385,8 @@ fn cmd_run_from_github_clone(
     if agents::commit::auto_commit_instance(&inst_dir, &format!("run: {} on {}", instance_name, instance::gethostname())).is_some() {
         println!("  ✓ identity committed & pushed");
     }
+
+    print_config_hints(&inst_dir, instance_name);
 
     Ok(())
 }
@@ -2349,6 +2384,11 @@ fn cmd_init(name: &str) -> Result<()> {
     println!("  ✓ cognition/logs/");
     println!("  ✓ .aideignore");
     println!("  ✓ README.md");
+    println!();
+    println!("configure:");
+    println!("  occupation/Agentfile.toml  — skills, env, limits (timeout/retry), expose");
+    println!("  occupation/persona.md      — agent personality");
+    println!("  aide.toml [aide]           — daily_commit_hour (default: 3, local time)");
     println!();
     println!("next: edit occupation/Agentfile.toml, then `aide build {}/`", name);
     Ok(())

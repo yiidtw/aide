@@ -298,16 +298,15 @@ impl Daemon {
 
     fn start_daily_commit_ticker(&self) {
         let data_dir = self.config.aide.data_dir.clone();
-        info!("starting daily cognition commit ticker");
+        let commit_hour = self.config.aide.daily_commit_hour;
+        info!(hour = commit_hour, "starting daily cognition commit ticker");
 
         tokio::spawn(async move {
-            // Check every 60 seconds, but only fire once per day at 03:00 local
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
                 let now = chrono::Local::now();
-                // Fire at 03:00 (minute 0, hour 3)
-                if now.hour() == 3 && now.minute() == 0 {
+                if now.hour() == commit_hour && now.minute() == 0 {
                     let results = crate::agents::commit::daily_commit_all(&data_dir);
                     if results.is_empty() {
                         info!("daily cognition commit: all clean");

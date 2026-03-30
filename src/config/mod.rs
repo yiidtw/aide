@@ -26,7 +26,12 @@ pub struct AideMeta {
     /// Path to the vault git repo (e.g., ~/claude_projects/aide-vault)
     #[serde(default)]
     pub vault_repo: Option<String>,
+    /// Hour (0-23, local time) for daily cognition commit. Default: 3 (03:00).
+    #[serde(default = "default_daily_commit_hour")]
+    pub daily_commit_hour: u32,
 }
+
+fn default_daily_commit_hour() -> u32 { 3 }
 
 fn default_data_dir() -> String {
     "~/.aide/data".to_string()
@@ -118,6 +123,7 @@ impl Default for AideConfig {
                 data_dir: default_data_dir(),
                 vault_path: None,
                 vault_repo: None,
+                daily_commit_hour: default_daily_commit_hour(),
             },
             machines: HashMap::new(),
             dispatch: HashMap::new(),

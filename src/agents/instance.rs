@@ -206,6 +206,10 @@ impl InstanceManager {
         }
 
         self.save_manifest(instance_name, &manifest)?;
+
+        // Initialize git repo so cognition commits work
+        git_init_instance(&inst_dir, instance_name)?;
+
         Ok(manifest)
     }
 
@@ -534,6 +538,49 @@ impl InstanceManager {
     fn last_log_entry(&self, name: &str) -> Option<String> {
         self.read_logs(name, 1).ok()?.into_iter().next()
     }
+}
+
+/// Initialize a git repo in a newly created instance directory.
+///
+/// Runs `git init -b main`, configures user identity for aide commits,
+/// writes a `.gitignore`, ensures `.gitkeep` files in empty dirs,
+/// and makes an initial commit.
+fn git_init_instance(inst_dir: &Path, instance_name: &str) -> Result<()> {
+    use std::process::Command;
+
+    let run_git = |args: &[&str]| -> Result<()> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(inst_dir)
+            .output()
+            .with_context(|| format!("failed to run git {:?}", args))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git {:?} failed: {}", args, stderr);
+        }
+        Ok(())
+    };
+
+    run_git(&["init", "-b", "main"])?;
+    run_git(&["config", "user.email", "aide@aide.sh"])?;
+    run_git(&["config", "user.name", "aide"])?;
+
+    // Write .gitignore
+    fs::write(
+        inst_dir.join(".gitignore"),
+        "cognition/logs/\n*.log\n.DS_Store\n",
+    )?;
+
+    // Ensure .gitkeep in empty dirs so git tracks them
+    let memory_dir = inst_dir.join("cognition/memory");
+    if memory_dir.exists() && fs::read_dir(&memory_dir)?.count() == 0 {
+        fs::write(memory_dir.join(".gitkeep"), "")?;
+    }
+
+    run_git(&["add", "-A"])?;
+    run_git(&["commit", "-m", &format!("init: {}", instance_name)])?;
+
+    Ok(())
 }
 
 /// Resolve a path with backward compatibility.

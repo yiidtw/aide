@@ -471,7 +471,10 @@ async fn main() -> Result<()> {
         }
         Command::Down => {
             println!("aide daemon stopping...");
-            println!("(not yet implemented — kill the process manually)");
+            match daemon::stop_daemon()? {
+                true => println!("aide daemon stopped."),
+                false => println!("no running daemon found."),
+            }
         }
 
         // ─── Agent extensions ───
@@ -901,7 +904,7 @@ fn cmd_run_from_github_clone(
     mgr.append_log(instance_name, &format!("created from git clone '{}' (image: {})", github_repo, image))?;
 
     // Auto-commit the machine_id/uuid update
-    auto_commit_instance(&inst_dir, &format!("run: {} on {}", instance_name, instance::gethostname()));
+    agents::commit::auto_commit_instance(&inst_dir, &format!("run: {} on {}", instance_name, instance::gethostname()));
 
     println!("{}", instance_name);
     Ok(())
@@ -976,7 +979,7 @@ fn cmd_exec(mgr: &InstanceManager, instance: &str, skill: &str, _interactive: bo
 
     // Auto-commit if instance is a git repo (fire-and-forget)
     let inst_dir = mgr.base_dir().join(instance);
-    if let Some(summary) = auto_commit_instance(&inst_dir, &format!("exec: {}", skill)) {
+    if let Some(summary) = agents::commit::auto_commit_instance(&inst_dir, &format!("exec: {}", skill)) {
         eprintln!("[aide] {}", summary.lines().next().unwrap_or("committed"));
     }
 
@@ -1133,17 +1136,46 @@ fn cmd_rm(mgr: &InstanceManager, instance: &str, keep_volumes: bool) -> Result<(
     Ok(())
 }
 
-fn cmd_logs(mgr: &InstanceManager, instance: &str, tail: usize, _follow: bool) -> Result<()> {
+fn cmd_logs(mgr: &InstanceManager, instance: &str, tail: usize, follow: bool) -> Result<()> {
     let _ = mgr.get(instance)?
         .ok_or_else(|| anyhow::anyhow!("No such instance: {}", instance))?;
 
     let logs = mgr.read_logs(instance, tail)?;
-    if logs.is_empty() {
-        return Ok(());
-    }
     for line in &logs {
         println!("{}", line);
     }
+
+    if follow {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let log_path = mgr.log_path(instance);
+        // Open or wait for the log file to appear
+        let mut file = if log_path.exists() {
+            std::fs::File::open(&log_path)?
+        } else {
+            // If no log file yet, wait for it to appear
+            loop {
+                if log_path.exists() {
+                    break std::fs::File::open(&log_path)?;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        };
+
+        // Seek to end so we only print new content
+        file.seek(SeekFrom::End(0))?;
+
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            let n = file.read_to_string(&mut buf)?;
+            if n > 0 {
+                print!("{}", buf);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
     Ok(())
 }
 
@@ -2245,7 +2277,7 @@ fn cmd_commit(data_dir: &str, instance: &str, message: &str) -> Result<()> {
     }
 
     // In-place commit + push + sanity check
-    match auto_commit_instance(&inst_dir, message) {
+    match agents::commit::auto_commit_instance(&inst_dir, message) {
         Some(summary) => {
             println!("{}", summary);
             mgr.append_log(instance, &format!("commit: {}", message))?;
@@ -2518,101 +2550,7 @@ fn cmd_deploy_github(data_dir: &str, instance: &str, private: bool) -> Result<()
 /// Auto-commit and push an instance directory if it's a git repo.
 /// Returns a summary string on success, or None if no changes / not a git repo.
 /// Fire-and-forget: never panics, never fails the caller.
-fn auto_commit_instance(inst_dir: &Path, message: &str) -> Option<String> {
-    if !inst_dir.join(".git").exists() {
-        return None;
-    }
-
-    let git_output = |args: &[&str]| -> std::result::Result<String, String> {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(inst_dir)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-        }
-    };
-
-    let git_ok = |args: &[&str]| -> bool {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(inst_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-
-    // Stage all changes
-    git_ok(&["add", "-A"]);
-
-    // Check if there are staged changes
-    if git_ok(&["diff", "--cached", "--quiet"]) {
-        return None; // nothing to commit
-    }
-
-    // Count changed files by category
-    let diff_stat = git_output(&["diff", "--cached", "--name-only"]).unwrap_or_default();
-    let mut occ_count = 0usize;
-    let mut cog_count = 0usize;
-    let mut other_count = 0usize;
-    for line in diff_stat.lines() {
-        if line.starts_with("occupation/") {
-            occ_count += 1;
-        } else if line.starts_with("cognition/") {
-            cog_count += 1;
-        } else {
-            other_count += 1;
-        }
-    }
-    let total = occ_count + cog_count + other_count;
-
-    // Commit
-    if !git_ok(&["commit", "-m", message]) {
-        tracing::warn!("auto-commit failed for {}", inst_dir.display());
-        return None;
-    }
-
-    // Push
-    let push_ok = git_ok(&["push"]);
-    if !push_ok {
-        tracing::warn!("auto-push failed for {}", inst_dir.display());
-    }
-
-    // Sanity check: verify HEAD matches origin/main
-    let sanity = if push_ok {
-        // Fetch to update remote refs
-        git_ok(&["fetch", "origin", "--quiet"]);
-        let local_head = git_output(&["rev-parse", "HEAD"]).unwrap_or_default();
-        let remote_head = git_output(&["rev-parse", "origin/main"]).unwrap_or_default();
-        if !local_head.is_empty() && local_head == remote_head {
-            let short = &local_head[..7.min(local_head.len())];
-            format!("sanity: HEAD == origin/main ({})", short)
-        } else {
-            format!("sanity: MISMATCH local={} remote={}",
-                &local_head[..7.min(local_head.len())],
-                &remote_head[..7.min(remote_head.len())])
-        }
-    } else {
-        "sanity: push failed, remote not updated".to_string()
-    };
-
-    let summary = format!(
-        "committed: {} files ({} occupation, {} cognition{})\npushed: {}\n{}",
-        total,
-        occ_count,
-        cog_count,
-        if other_count > 0 { format!(", {} other", other_count) } else { String::new() },
-        if push_ok { "ok" } else { "FAILED" },
-        sanity,
-    );
-
-    Some(summary)
-}
+// auto_commit_instance moved to agents::commit
 
 /// Write the standard .gitignore for an aide instance repo.
 fn write_instance_gitignore(inst_dir: &Path) -> Result<()> {

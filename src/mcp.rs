@@ -373,7 +373,7 @@ fn tool_aide_exec(id: Value, args: &Value, mgr: &InstanceManager) -> Value {
     }
 
     // Auto-commit if instance is a git repo (fire-and-forget)
-    if let Some(commit_summary) = auto_commit_instance(&inst_dir, &format!("exec: {}", skill)) {
+    if let Some(commit_summary) = crate::agents::commit::auto_commit_instance(&inst_dir, &format!("exec: {}", skill)) {
         if !output.is_empty() && !output.ends_with('\n') {
             output.push('\n');
         }
@@ -586,7 +586,7 @@ fn tool_aide_commit(id: Value, args: &Value, mgr: &InstanceManager) -> Value {
         );
     }
 
-    match auto_commit_instance(&inst_dir, message) {
+    match crate::agents::commit::auto_commit_instance(&inst_dir, message) {
         Some(summary) => {
             let _ = mgr.append_log(instance, &format!("mcp-commit: {}", message));
             tool_result(id, &summary)
@@ -614,7 +614,7 @@ fn tool_aide_commit_all(id: Value, mgr: &InstanceManager) -> Value {
             continue;
         }
 
-        match auto_commit_instance(&inst_dir, "auto-commit: session sync") {
+        match crate::agents::commit::auto_commit_instance(&inst_dir, "auto-commit: session sync") {
             Some(summary) => {
                 output.push_str(&format!("{}:\n{}\n\n", inst.name, summary));
                 let _ = mgr.append_log(&inst.name, "mcp-commit-all: session sync");
@@ -634,90 +634,7 @@ fn tool_aide_commit_all(id: Value, mgr: &InstanceManager) -> Value {
     }
 }
 
-// ─── Git helpers ────────────────────────────────────────────────
-
-/// Auto-commit and push an instance directory if it's a git repo.
-/// Returns a summary string on success, or None if no changes / not a git repo.
-fn auto_commit_instance(inst_dir: &std::path::Path, message: &str) -> Option<String> {
-    if !inst_dir.join(".git").exists() {
-        return None;
-    }
-
-    let git_output = |args: &[&str]| -> std::result::Result<String, String> {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(inst_dir)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-        }
-    };
-
-    let git_ok = |args: &[&str]| -> bool {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(inst_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-
-    git_ok(&["add", "-A"]);
-
-    if git_ok(&["diff", "--cached", "--quiet"]) {
-        return None;
-    }
-
-    let diff_stat = git_output(&["diff", "--cached", "--name-only"]).unwrap_or_default();
-    let mut occ_count = 0usize;
-    let mut cog_count = 0usize;
-    let mut other_count = 0usize;
-    for line in diff_stat.lines() {
-        if line.starts_with("occupation/") {
-            occ_count += 1;
-        } else if line.starts_with("cognition/") {
-            cog_count += 1;
-        } else {
-            other_count += 1;
-        }
-    }
-    let total = occ_count + cog_count + other_count;
-
-    if !git_ok(&["commit", "-m", message]) {
-        return None;
-    }
-
-    let push_ok = git_ok(&["push"]);
-
-    let sanity = if push_ok {
-        git_ok(&["fetch", "origin", "--quiet"]);
-        let local_head = git_output(&["rev-parse", "HEAD"]).unwrap_or_default();
-        let remote_head = git_output(&["rev-parse", "origin/main"]).unwrap_or_default();
-        if !local_head.is_empty() && local_head == remote_head {
-            let short = &local_head[..7.min(local_head.len())];
-            format!("sanity: HEAD == origin/main ({})", short)
-        } else {
-            format!("sanity: MISMATCH local={} remote={}",
-                &local_head[..7.min(local_head.len())],
-                &remote_head[..7.min(remote_head.len())])
-        }
-    } else {
-        "sanity: push failed, remote not updated".to_string()
-    };
-
-    Some(format!(
-        "committed: {} files ({} occupation, {} cognition{})\npushed: {}\n{}",
-        total, occ_count, cog_count,
-        if other_count > 0 { format!(", {} other", other_count) } else { String::new() },
-        if push_ok { "ok" } else { "FAILED" },
-        sanity,
-    ))
-}
+// auto_commit_instance moved to crate::agents::commit
 
 // ─── Helpers (replicated from main.rs since they are not pub) ───
 

@@ -618,40 +618,10 @@ async fn commit_memory(
     inst_dir: &std::path::Path,
     issue_number: u64,
 ) -> Result<()> {
-    if !inst_dir.join(".git").exists() {
-        return Ok(());
-    }
-
     let message = format!("memory: issue #{}", issue_number);
-
-    let git_ok = |args: &[&str]| -> bool {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(inst_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-
-    git_ok(&["add", "-A"]);
-
-    if git_ok(&["diff", "--cached", "--quiet"]) {
-        return Ok(()); // nothing to commit
+    if let Some(summary) = crate::agents::commit::auto_commit_instance(inst_dir, &message) {
+        info!(dir = %inst_dir.display(), "memory committed: {}", summary.lines().next().unwrap_or("ok"));
     }
-
-    if !git_ok(&["commit", "-m", &message]) {
-        warn!("git commit failed for {}", inst_dir.display());
-        return Ok(());
-    }
-
-    if !git_ok(&["push"]) {
-        warn!("git push failed for {}", inst_dir.display());
-    } else {
-        info!(dir = %inst_dir.display(), "memory committed via git push");
-    }
-
     Ok(())
 }
 

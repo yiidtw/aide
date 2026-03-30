@@ -1,9 +1,96 @@
 use anyhow::{Context, Result};
 use chrono::{Datelike, Timelike};
 use std::path::{Path, PathBuf};
-use tokio::signal;
 use tokio::time::Duration;
 use tracing::{error, info, warn};
+
+/// Return the path to `~/.aide/daemon.pid`.
+fn pid_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".aide").join("daemon.pid")
+}
+
+/// Write the current process PID to the PID file.
+fn write_pid_file() -> Result<()> {
+    let path = pid_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, std::process::id().to_string())?;
+    Ok(())
+}
+
+/// Remove the PID file if it exists.
+fn remove_pid_file() {
+    let _ = std::fs::remove_file(pid_file_path());
+}
+
+/// Stop the running daemon. Returns Ok(true) if a daemon was stopped,
+/// Ok(false) if no daemon was running.
+pub fn stop_daemon() -> Result<bool> {
+    let path = pid_file_path();
+
+    let pid_str = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(false);
+        }
+    };
+
+    let pid: u32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => {
+            // Stale / corrupt PID file — clean up
+            let _ = std::fs::remove_file(&path);
+            return Ok(false);
+        }
+    };
+
+    // Check if process is alive (signal 0)
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !alive {
+        // Stale PID file
+        let _ = std::fs::remove_file(&path);
+        return Ok(false);
+    }
+
+    // Send SIGTERM
+    let sent = std::process::Command::new("kill")
+        .args([&pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !sent {
+        anyhow::bail!("failed to send SIGTERM to pid {}", pid);
+    }
+
+    // Wait up to 10 seconds for process to exit
+    for _ in 0..100 {
+        let still_alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !still_alive {
+            let _ = std::fs::remove_file(&path);
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Force kill
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+    let _ = std::fs::remove_file(&path);
+    Ok(true)
+}
 
 use crate::agents::agentfile::AgentfileSpec;
 use crate::agents::instance::InstanceManager;
@@ -33,6 +120,9 @@ impl Daemon {
     }
 
     pub async fn run(&self) -> Result<()> {
+        // Write PID file so `aide down` can find us
+        write_pid_file().context("failed to write daemon PID file")?;
+
         info!(
             name = %self.config.aide.name,
             machines = self.config.machines.len(),
@@ -62,6 +152,9 @@ impl Daemon {
         // Start cron ticker
         self.start_cron_ticker();
 
+        // Start daily cognition commit ticker
+        self.start_daily_commit_ticker();
+
         // Start Telegram bots for instances that declare [expose.telegram]
         self.start_telegram_bots();
 
@@ -70,16 +163,35 @@ impl Daemon {
 
         info!("aide daemon ready, waiting for signals");
 
-        // Wait for shutdown signal
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("received SIGINT, shutting down");
-            }
-            Err(err) => {
-                warn!("failed to listen for shutdown signal: {}", err);
+        // Wait for SIGINT or SIGTERM
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigint = signal(SignalKind::interrupt())?;
+            let mut sigterm = signal(SignalKind::terminate())?;
+            tokio::select! {
+                _ = sigint.recv() => {
+                    info!("received SIGINT, shutting down");
+                }
+                _ = sigterm.recv() => {
+                    info!("received SIGTERM, shutting down");
+                }
             }
         }
 
+        #[cfg(not(unix))]
+        {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("received SIGINT, shutting down");
+                }
+                Err(err) => {
+                    warn!("failed to listen for shutdown signal: {}", err);
+                }
+            }
+        }
+
+        remove_pid_file();
         info!("aide daemon stopped");
         Ok(())
     }
@@ -178,6 +290,31 @@ impl Daemon {
                 interval.tick().await;
                 if let Err(e) = cron_tick(&data_dir) {
                     error!(error = %e, "cron tick failed");
+                }
+            }
+        });
+    }
+
+    fn start_daily_commit_ticker(&self) {
+        let data_dir = self.config.aide.data_dir.clone();
+        info!("starting daily cognition commit ticker");
+
+        tokio::spawn(async move {
+            // Check every 60 seconds, but only fire once per day at 03:00 local
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = chrono::Local::now();
+                // Fire at 03:00 (minute 0, hour 3)
+                if now.hour() == 3 && now.minute() == 0 {
+                    let results = crate::agents::commit::daily_commit_all(&data_dir);
+                    if results.is_empty() {
+                        info!("daily cognition commit: all clean");
+                    } else {
+                        for (name, summary) in &results {
+                            info!(instance = %name, "daily cognition commit:\n{}", summary);
+                        }
+                    }
                 }
             }
         });

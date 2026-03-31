@@ -414,7 +414,7 @@ fn cron_tick(data_dir: &str) -> Result<()> {
                     std::thread::sleep(backoff);
                 }
 
-                let result = exec_cron_skill(&inst_dir, &entry.skill, &vault_env, timeout_secs);
+                let result = exec_skill_or_aide_skill(&inst_dir, &entry.skill, "", &vault_env, timeout_secs);
 
                 match &result {
                     Ok((exit_code, _, _)) if *exit_code == 0 => {
@@ -602,8 +602,9 @@ fn cron_field_matches(field: &str, value: u32) -> bool {
     false
 }
 
-/// Find a skill script, trying occupation/skills/ first, then skills/.
+/// Find a skill script, trying occupation/skills/ first, then skills/, then aide-skill.
 fn find_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
+    // 1. Local instance skills
     for dir in &["occupation/skills", "skills"] {
         for ext in &["ts", "sh"] {
             let path = inst_dir.join(dir).join(format!("{}.{}", skill_name, ext));
@@ -613,6 +614,65 @@ fn find_skill_script(inst_dir: &Path, skill_name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Execute a skill, trying local scripts first, then falling back to aide-skill CLI.
+fn exec_skill_or_aide_skill(
+    inst_dir: &Path,
+    skill_name: &str,
+    args: &str,
+    env: &[(String, String)],
+    timeout_secs: u64,
+) -> Result<(i32, String, String)> {
+    // Try local script first
+    if let Some(_script) = find_skill_script(inst_dir, skill_name) {
+        return exec_cron_skill(inst_dir, skill_name, env, timeout_secs);
+    }
+    // Fallback: aide-skill CLI
+    info!(skill = skill_name, "local script not found, trying aide-skill");
+    let mut cmd = std::process::Command::new("aide-skill");
+    cmd.arg(skill_name);
+    if !args.is_empty() {
+        for a in args.split_whitespace() {
+            cmd.arg(a);
+        }
+    }
+    cmd.current_dir(inst_dir);
+    cmd.env("AIDE_INSTANCE_DIR", inst_dir);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("aide-skill {} not found", skill_name))?;
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => {
+            let stdout = child.stdout.take().map(|mut s| {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                buf
+            }).unwrap_or_default();
+            let stderr = child.stderr.take().map(|mut s| {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                buf
+            }).unwrap_or_default();
+            Ok((status.code().unwrap_or(-1), stdout, stderr))
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("aide-skill '{}' timed out after {}s", skill_name, timeout_secs)
+        }
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(e).context(format!("failed waiting on aide-skill {}", skill_name))
+        }
+    }
 }
 
 /// Execute a skill script for a cron entry, with timeout enforcement.

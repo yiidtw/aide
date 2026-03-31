@@ -505,18 +505,21 @@ fn exec_agent(
             let skill_name = parts[0];
             let args = if parts.len() > 1 { parts[1] } else { "" };
 
-            // Try occupation/skills/ first, then skills/ for backward compat
+            // Try local script first, then aide-skill fallback
             let script = find_skill_script(inst_dir, skill_name);
-            if let Some(script) = script {
-                match exec_skill_raw(&script, args, inst_dir, &vault_env) {
-                    Ok((_, stdout, stderr)) => {
-                        if !stdout.trim().is_empty() { results.push(stdout); }
-                        if !stderr.trim().is_empty() { results.push(format!("[stderr] {}", stderr)); }
-                    }
-                    Err(e) => results.push(format!("Error running {}: {}", skill_name, e)),
-                }
+            let exec_result = if let Some(script) = script {
+                exec_skill_raw(&script, args, inst_dir, &vault_env)
             } else {
-                results.push(format!("Skill not found: {}", skill_name));
+                // Fallback to aide-skill CLI
+                tracing::info!(skill = skill_name, "local script not found, trying aide-skill");
+                exec_aide_skill(skill_name, args, inst_dir, &vault_env)
+            };
+            match exec_result {
+                Ok((_, stdout, stderr)) => {
+                    if !stdout.trim().is_empty() { results.push(stdout); }
+                    if !stderr.trim().is_empty() { results.push(format!("[stderr] {}", stderr)); }
+                }
+                Err(e) => results.push(format!("Error running {}: {}", skill_name, e)),
             }
         }
     }
@@ -555,6 +558,35 @@ fn exec_skill_raw(
     let output = cmd
         .output()
         .with_context(|| format!("failed to execute: {}", script.display()))?;
+    Ok((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    ))
+}
+
+/// Fallback: execute a skill via aide-skill CLI.
+fn exec_aide_skill(
+    skill_name: &str,
+    args: &str,
+    working_dir: &std::path::Path,
+    env: &[(String, String)],
+) -> Result<(i32, String, String)> {
+    let mut cmd = std::process::Command::new("aide-skill");
+    cmd.arg(skill_name);
+    if !args.is_empty() {
+        for a in args.split_whitespace() {
+            cmd.arg(a);
+        }
+    }
+    cmd.current_dir(working_dir);
+    cmd.env("AIDE_INSTANCE_DIR", working_dir);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .output()
+        .with_context(|| format!("aide-skill {} not found or failed", skill_name))?;
     Ok((
         output.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&output.stdout).to_string(),

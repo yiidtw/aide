@@ -1968,12 +1968,13 @@ fn exec_wonskill(skill: &str, args: &str, working_dir: &Path, env: &[(String, St
         }
     }
     cmd.current_dir(working_dir);
+    cmd.env("AIDE_INSTANCE_DIR", working_dir);
     for (k, v) in env {
         cmd.env(k, v);
     }
 
     let output = cmd.output()
-        .with_context(|| format!("failed to execute wonskill {} {}", skill, args))?;
+        .with_context(|| format!("failed to execute aide-skill {} {}", skill, args))?;
 
     Ok((
         output.status.code().unwrap_or(-1),
@@ -1982,21 +1983,27 @@ fn exec_wonskill(skill: &str, args: &str, working_dir: &Path, env: &[(String, St
     ))
 }
 
-/// Find wonskill binary
+/// Find aide-skill (or legacy wonskill) binary
 fn which_wonskill() -> Result<PathBuf> {
-    if let Ok(output) = std::process::Command::new("which").arg("wonskill").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
+    // Try aide-skill first (current name), then wonskill (legacy)
+    for bin_name in &["aide-skill", "wonskill"] {
+        if let Ok(output) = std::process::Command::new("which").arg(bin_name).output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Ok(PathBuf::from(path));
+                }
             }
         }
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let candidates = [
-        format!("{}/.nvm/versions/node/v22.14.0/bin/wonskill", home), // common nvm path
+        format!("{}/.nvm/versions/node/v22.14.0/bin/aide-skill", home),
+        format!("{}/.nvm/versions/node/v22.14.0/bin/wonskill", home),
+        format!("{}/bin/aide-skill", home),
         format!("{}/bin/wonskill", home),
+        "/usr/local/bin/aide-skill".to_string(),
         "/usr/local/bin/wonskill".to_string(),
     ];
 
@@ -2007,7 +2014,7 @@ fn which_wonskill() -> Result<PathBuf> {
         }
     }
 
-    bail!("wonskill not found. Install it or add it to PATH.")
+    bail!("aide-skill not found. Install it or add it to PATH.")
 }
 
 // ─── Credential scoping (Docker secrets model) ───

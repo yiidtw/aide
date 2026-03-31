@@ -448,14 +448,14 @@ fn cron_tick(data_dir: &str) -> Result<()> {
                     }
                     // Log truncated stdout/stderr for debugging
                     if !stdout.trim().is_empty() {
-                        let truncated: String = stdout.chars().take(500).collect();
+                        let truncated: String = stdout.chars().take(2000).collect();
                         let _ = mgr.append_log(
                             &inst.name,
                             &format!("cron-stdout: {}: {}", entry.skill, truncated.trim()),
                         );
                     }
                     if !stderr.trim().is_empty() {
-                        let truncated: String = stderr.chars().take(500).collect();
+                        let truncated: String = stderr.chars().take(2000).collect();
                         let _ = mgr.append_log(
                             &inst.name,
                             &format!("cron-stderr: {}: {}", entry.skill, truncated.trim()),

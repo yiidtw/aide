@@ -496,17 +496,36 @@ fn exec_agent(
         .map(|spec| spec.format_help(instance))
         .unwrap_or_default();
 
+    // Read memory files (cognition/memory/*.md)
+    let memory_dir = crate::agents::instance::resolve_path(inst_dir, "cognition/memory", "memory");
+    let memory = if memory_dir.exists() {
+        let mut mem = String::new();
+        if let Ok(entries) = std::fs::read_dir(&memory_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().map(|e| e == "md").unwrap_or(false) {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+                        mem.push_str(&format!("### {}\n{}\n\n", name, content));
+                    }
+                }
+            }
+        }
+        if mem.is_empty() { String::new() }
+        else { format!("\n\n## Memory\n{}", mem) }
+    } else { String::new() };
+
     let prompt = format!(
         "You are an autonomous agent running in DAEMON MODE (not interactive).\n\
          You have NO access to MCP tools, browser, or interactive UI.\n\
          You can ONLY use the skills listed below via EXEC: <skill_name> [args].\n\
-         If no skill matches, answer directly from your knowledge.\n\
+         If no skill matches, answer directly from your knowledge and memory.\n\
          Do NOT ask for permissions, do NOT mention MCP, do NOT request user interaction.\n\n\
          Respond with:\n\
          - EXEC: <skill_name> [args]  — to run a skill\n\
          - Or a direct text answer\n\n\
-         ## Persona\n{}\n\n## Available Skills\n{}\n\n## Task\n{}",
-        persona, skill_info, query
+         ## Persona\n{}\n\n## Available Skills\n{}{}\n\n## Task\n{}",
+        persona, skill_info, memory, query
     );
 
     let output = std::process::Command::new("claude")

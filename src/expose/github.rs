@@ -167,34 +167,43 @@ pub fn start_github_issues_ticker(data_dir: String) {
                             };
                             let result = exec_agent(&inst.name, &inst_dir, &query);
 
-                            let result_body = match result {
+                            match &result {
                                 Ok(output) => {
                                     let _ = mgr.append_log(
                                         &inst.name,
                                         &format!("github-issue-result: #{} → ok", number),
                                     );
-                                    if output.trim().is_empty() { "(no output)".to_string() }
-                                    else { truncate_for_comment(&output) }
+                                    let result_body = if output.trim().is_empty() { "(no output)".to_string() }
+                                        else { truncate_for_comment(output) };
+                                    if let Err(e) = post_comment(&client, &repo, &token, number, &result_body).await {
+                                        error!(error = %e, "failed to post result on issue #{}", number);
+                                    }
+                                    // Commit memory changes back to repo
+                                    if let Err(e) = commit_memory(&client, &repo, &token, &inst_dir, number).await {
+                                        warn!(error = %e, "failed to commit memory for issue #{}", number);
+                                    }
+                                    // Only advance last_seen on success
+                                    state.last_seen_issue = state.last_seen_issue.max(number);
                                 }
                                 Err(e) => {
+                                    // LLM unavailable — do NOT advance last_seen, will retry next tick
+                                    warn!(
+                                        instance = %inst.name,
+                                        issue = number,
+                                        error = %e,
+                                        "exec failed, will retry next tick"
+                                    );
                                     let _ = mgr.append_log(
                                         &inst.name,
-                                        &format!("github-issue-result: #{} → error: {}", number, e),
+                                        &format!("github-issue-result: #{} → deferred ({})", number, e),
                                     );
-                                    format!("Error: {}", e)
+                                    // Post a temporary comment so sender knows we're trying
+                                    let _ = post_comment(
+                                        &client, &repo, &token, number,
+                                        &format!("⏳ Processing deferred — LLM unavailable, will retry.\n\n_{}_", e),
+                                    ).await;
                                 }
-                            };
-
-                            if let Err(e) = post_comment(&client, &repo, &token, number, &result_body).await {
-                                error!(error = %e, "failed to post result on issue #{}", number);
                             }
-
-                            // Commit memory changes back to repo
-                            if let Err(e) = commit_memory(&client, &repo, &token, &inst_dir, number).await {
-                                warn!(error = %e, "failed to commit memory for issue #{}", number);
-                            }
-
-                            state.last_seen_issue = state.last_seen_issue.max(number);
                         }
                     }
                     Err(e) => {

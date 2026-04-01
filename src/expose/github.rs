@@ -46,6 +46,21 @@ pub fn start_github_issues_ticker(data_dir: String) {
                 continue;
             };
 
+            // Resolve authenticated GitHub username (for comment loop prevention)
+            let gh_user = match client
+                .get(format!("{}/user", GITHUB_API))
+                .header("Authorization", format!("Bearer {}", token))
+                .header("User-Agent", "aide.sh")
+                .send()
+                .await
+            {
+                Ok(resp) => resp.json::<serde_json::Value>().await
+                    .ok()
+                    .and_then(|v| v["login"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+
             let mgr = InstanceManager::new(&data_dir);
             let instances = match mgr.list() {
                 Ok(v) => v,
@@ -190,7 +205,7 @@ pub fn start_github_issues_ticker(data_dir: String) {
                 // Poll for new comments
                 if let Err(e) = poll_issue_comments(
                     &client, &mgr, &inst.name, &inst_dir, &repo, &token,
-                    &mut state.last_seen_comments, &manifest,
+                    &mut state.last_seen_comments, &manifest, &gh_user,
                 ).await {
                     warn!(instance = %inst.name, error = %e, "github comments poll failed");
                 }
@@ -308,6 +323,7 @@ async fn poll_issue_comments(
     token: &str,
     last_seen_comments: &mut HashMap<u64, u64>,
     manifest: &Option<crate::agents::instance::InstanceManifest>,
+    gh_user: &str,
 ) -> Result<()> {
     let url = format!(
         "{}/repos/{}/issues?state=open&sort=updated&direction=desc&per_page=5",
@@ -376,6 +392,12 @@ async fn poll_issue_comments(
 
             let body = comment["body"].as_str().unwrap_or("");
             if body.is_empty() || body.starts_with("🤖") {
+                last_seen_comments.insert(number, last_seen.max(comment_id));
+                continue;
+            }
+
+            // Skip comments from ourselves (same GITHUB_TOKEN user) to prevent comment loops
+            if author == gh_user {
                 last_seen_comments.insert(number, last_seen.max(comment_id));
                 continue;
             }

@@ -84,8 +84,13 @@ pub async fn run_telegram_bot(data_dir: &str, instance: &str, token: &str) -> Re
         let resp = match tg_request(&client, token, "getUpdates", &params).await {
             Ok(r) => r,
             Err(e) => {
-                warn!(instance = %instance, error = %e, "telegram getUpdates failed, retrying in 5s");
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                let err_str = format!("{}", e);
+                if err_str.contains("Conflict") || err_str.contains("terminated by other") {
+                    warn!(instance = %instance, "telegram bot conflict — another instance is running. Disabling telegram for this session.");
+                    return Ok(());
+                }
+                warn!(instance = %instance, error = %e, "telegram getUpdates failed, retrying in 60s");
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
                 continue;
             }
         };

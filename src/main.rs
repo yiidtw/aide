@@ -1534,30 +1534,61 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
     let persona_path = agents::instance::resolve_path(&inst_dir, "occupation/persona.md", "persona.md");
     let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
 
-    // Read skill catalog from Agentfile
-    let skill_info = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
+    // Local skills from Agentfile + global aide-skill catalog
+    let local_skills = if let Ok(spec) = AgentfileSpec::load(&inst_dir) {
         spec.format_help(instance)
     } else {
         String::new()
     };
+    let skill_info = format!("{}{}", local_skills, agents::enumerate_aide_skills());
 
-    // Discover org members if this instance is a router
+    // Vault keys available (injected so agent knows what secrets exist)
+    let vault_env = crate::expose::github::github_vault_env();
+    let vault_info = if vault_env.is_empty() {
+        String::new()
+    } else {
+        let keys: Vec<&str> = vault_env.iter().map(|(k, _)| k.as_str()).collect();
+        format!("\n\n## Vault (available secrets)\n{}\n(injected automatically into skill env)", keys.join(", "))
+    };
+
+    // Discover org members if this instance is a router, and read their memory
     let manifest = mgr.get(instance)?.unwrap();
     let org_members_info = if manifest.org_router.as_deref() == Some(instance) {
-        // I am the router — list my org members
         if let Some(ref org) = manifest.org {
             let all = mgr.list()?;
-            let members: Vec<String> = all.iter()
+            let member_instances: Vec<_> = all.iter()
                 .filter(|i| i.org.as_deref() == Some(org.as_str()) && i.name != instance)
-                .map(|i| {
-                    let gh = mgr.get(&i.name).ok().flatten()
-                        .and_then(|m| m.github_repo)
-                        .unwrap_or_default();
-                    format!("  - {} (repo: {}, status: {})", i.name, gh, i.status)
-                })
                 .collect();
-            if members.is_empty() { String::new() }
-            else { format!("\n\n## Org Members (you are the router)\n{}", members.join("\n")) }
+
+            let mut sections = Vec::new();
+            for i in &member_instances {
+                let gh = mgr.get(&i.name).ok().flatten()
+                    .and_then(|m| m.github_repo)
+                    .unwrap_or_default();
+                let mut section = format!("### {} (repo: {}, status: {})", i.name, gh, i.status);
+
+                // Inject member's cognition/memory/*.md so router knows each agent's context
+                let member_dir = mgr.base_dir().join(&i.name);
+                let mem_dir = agents::instance::resolve_path(&member_dir, "cognition/memory", "memory");
+                if mem_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&mem_dir) {
+                        let mut mem_files: Vec<_> = entries.filter_map(|e| e.ok())
+                            .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+                            .collect();
+                        mem_files.sort_by_key(|e| e.file_name());
+                        for entry in mem_files {
+                            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                let name = entry.path().file_stem().unwrap_or_default().to_string_lossy().to_string();
+                                section.push_str(&format!("\n#### {}\n{}", name, content));
+                            }
+                        }
+                    }
+                }
+                sections.push(section);
+            }
+
+            if sections.is_empty() { String::new() }
+            else { format!("\n\n## Org Members (you are the router)\n{}", sections.join("\n\n")) }
         } else { String::new() }
     } else { String::new() };
 
@@ -1569,18 +1600,20 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
          DISPATCH: <member_instance> <task description>\n\
          REPLY: <message>\n\n\
          Rules:\n\
-         - skill_name = skill name only (e.g. 'cool', 'mail'), NOT instance name\n\
-         - DISPATCH opens a GitHub issue on the member's repo\n\
-         - Multiple actions allowed\n\
-         - REPLY only if no action needed\n\n\
-         ## Persona\n{}\n\n## Skills\n{}{}\n\n## Query\n{}",
-        persona, skill_info, org_members_info, query
+         - EXEC is ONLY for your own router-level skills (briefing, mail, cool-watch). NOT for member business.\n\
+         - If the query concerns an org member's domain, ALWAYS DISPATCH to that member. Never run their work yourself.\n\
+         - Each member has their own memory, context, and skills built up over time — trust them, don't bypass them.\n\
+         - DISPATCH to ALL relevant members if the query is broad (e.g. 'status of all courses' → dispatch to each course bot).\n\
+         - REPLY only if the query is purely about you (the router) and requires no member input.\n\n\
+         ## Persona\n{}\n\n## Skills\n{}{}{}\n\n## Query\n{}",
+        persona, skill_info, vault_info, org_members_info, query
     );
 
     // Call claude -p with no tools (pure text output, no MCP)
     let output = std::process::Command::new("claude")
         .args(["--allowedTools", "", "-p"])
         .arg(&prompt)
+        .current_dir(&inst_dir)
         .output();
 
     let claude_response = match output {
@@ -1699,53 +1732,63 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
         print!("{}", claude_response);
     }
 
-    // Two-step dispatch: if we EXEC'd something but no DISPATCH, feed results back to LLM
-    if executed && !claude_response.contains("DISPATCH:") && !org_members_info.is_empty() && !exec_outputs.is_empty() {
-        let _ = mgr.append_log(instance, &format!("prompt-step2: analyzing {} exec results for dispatch", exec_outputs.len()));
+    // Two-step: if we EXEC'd something, feed results back to LLM for summary/dispatch
+    if executed && !exec_outputs.is_empty() {
+        let _ = mgr.append_log(instance, &format!("prompt-step2: analyzing {} exec results", exec_outputs.len()));
         let exec_results = exec_outputs.join("\n\n");
         let follow_up = format!(
-            "You ran skills and got these results:\n\n{}\n\n\
-             Based on these results, which tasks should be DISPATCH'd to org members?\n\
-             Respond ONLY with DISPATCH: lines or REPLY: if nothing to dispatch.\n\n\
-             {}\n\nOriginal query: {}",
-            exec_results, org_members_info, query
+            "You are an agent router. You ran skills and got these results:\n\n{}\n\n\
+             Original query: {}\n\n\
+             Respond with:\n\
+             - DISPATCH: <member> <task> — to assign work to an org member\n\
+             - REPLY: followed by a comprehensive answer on separate lines\n\n\
+             If the query asks for a status summary, produce a REPLY with a full, structured answer \
+             integrating the skill results AND any relevant member context below. \
+             Do NOT truncate — include all courses, all assignments, all statuses.\n\n\
+             {}",
+            exec_results, query, org_members_info
         );
-        {
-            let follow_resp = std::process::Command::new("claude")
-                .arg("-p")
-                .arg(&follow_up)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
 
-            if let Some(resp) = follow_resp {
-                for line in resp.lines() {
-                    let line = line.trim();
-                    if let Some(cmd) = line.strip_prefix("DISPATCH:") {
-                        let cmd = cmd.trim();
-                        let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
-                        let target = parts[0];
-                        let task = if parts.len() > 1 { parts[1] } else { query };
-                        let target_repo = mgr.get(target).ok().flatten().and_then(|m| m.github_repo);
-                        if let Some(repo) = target_repo {
-                            eprintln!("  ✓ DISPATCH: {} → {}", target, task);
-                            let title: String = task.chars().take(60).collect();
-                            let body = format!("Dispatched by router `{}`.\n\n{}", instance, task);
-                            let r = std::process::Command::new("gh")
-                                .args(["issue", "create", "--repo", &repo, "--title", &title, "--body", &body, "--label", "dispatch"])
-                                .output();
-                            if let Ok(o) = r {
-                                if o.status.success() {
-                                    let url = String::from_utf8_lossy(&o.stdout);
-                                    eprintln!("  ✓ issue opened: {}", url.trim());
-                                    let _ = mgr.append_log(instance, &format!("dispatch: {} → {} ({})", target, task, url.trim()));
-                                }
+        let follow_resp = std::process::Command::new("claude")
+            .args(["--allowedTools", "", "-p"])
+            .arg(&follow_up)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+
+        if let Some(resp) = follow_resp {
+            let mut in_reply = false;
+            for line in resp.lines() {
+                let trimmed = line.trim();
+                if let Some(cmd) = trimmed.strip_prefix("DISPATCH:") {
+                    in_reply = false;
+                    let cmd = cmd.trim();
+                    let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+                    let target = parts[0];
+                    let task = if parts.len() > 1 { parts[1] } else { query };
+                    let target_repo = mgr.get(target).ok().flatten().and_then(|m| m.github_repo);
+                    if let Some(repo) = target_repo {
+                        eprintln!("  ✓ DISPATCH: {} → {}", target, task);
+                        let title: String = task.chars().take(60).collect();
+                        let body = format!("Dispatched by router `{}`.\n\n{}", instance, task);
+                        let r = std::process::Command::new("gh")
+                            .args(["issue", "create", "--repo", &repo, "--title", &title, "--body", &body, "--label", "dispatch"])
+                            .output();
+                        if let Ok(o) = r {
+                            if o.status.success() {
+                                let url = String::from_utf8_lossy(&o.stdout);
+                                eprintln!("  ✓ issue opened: {}", url.trim());
+                                let _ = mgr.append_log(instance, &format!("dispatch: {} → {} ({})", target, task, url.trim()));
                             }
                         }
-                    } else if let Some(msg) = line.strip_prefix("REPLY:") {
-                        println!("{}", msg.trim());
                     }
+                } else if trimmed.starts_with("REPLY:") {
+                    in_reply = true;
+                    let msg = trimmed.strip_prefix("REPLY:").unwrap_or("").trim();
+                    if !msg.is_empty() { println!("{}", msg); }
+                } else if in_reply {
+                    println!("{}", line);
                 }
             }
         }

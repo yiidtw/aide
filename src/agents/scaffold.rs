@@ -110,6 +110,21 @@ console.log(`Hello, ${{name}}! I'm your aide agent.`);
     // cognition/memory/.gitkeep
     fs::write(dir.join("cognition/memory/.gitkeep"), "")?;
 
+    // CLAUDE.md — tells Claude Code where this agent's memory lives
+    let claude_md = format!(
+        r#"# {name}
+
+This is an aide agent instance. You are running as `{name}`.
+
+## Memory
+
+Your persistent memory lives in `cognition/memory/`. Read and write there.
+
+@cognition/memory
+"#
+    );
+    fs::write(dir.join("CLAUDE.md"), claude_md)?;
+
     // .aideignore
     fs::write(dir.join(".aideignore"), "cognition/\n")?;
 

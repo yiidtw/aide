@@ -491,29 +491,35 @@ fn exec_agent(
     // Read persona (try occupation/persona.md first, fall back to persona.md)
     let persona_path = crate::agents::instance::resolve_path(inst_dir, "occupation/persona.md", "persona.md");
     let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
-    let skill_info = AgentfileSpec::load(inst_dir)
+
+    // Local skills from Agentfile
+    let local_skills = AgentfileSpec::load(inst_dir)
         .ok()
         .map(|spec| spec.format_help(instance))
         .unwrap_or_default();
 
-    // Read memory files (cognition/memory/*.md)
-    let memory_dir = crate::agents::instance::resolve_path(inst_dir, "cognition/memory", "memory");
-    let memory = if memory_dir.exists() {
-        let mut mem = String::new();
-        if let Ok(entries) = std::fs::read_dir(&memory_dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.extension().map(|e| e == "md").unwrap_or(false) {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let name = path.file_stem().unwrap_or_default().to_string_lossy();
-                        mem.push_str(&format!("### {}\n{}\n\n", name, content));
-                    }
-                }
-            }
-        }
-        if mem.is_empty() { String::new() }
-        else { format!("\n\n## Memory\n{}", mem) }
-    } else { String::new() };
+    // Global aide-skill catalog (injected so agent knows all available skills)
+    let global_skills = crate::agents::enumerate_aide_skills();
+
+    let skill_info = format!("{}{}", local_skills, global_skills);
+
+    // Vault keys available to this agent
+    let vault_env = load_vault_env().unwrap_or_default();
+    let vault_info = if vault_env.is_empty() {
+        String::new()
+    } else {
+        let keys: Vec<&str> = vault_env.iter().map(|(k, _)| k.as_str()).collect();
+        format!("\n\n## Vault (available secrets)\n{}\n(injected automatically into skill env)", keys.join(", "))
+    };
+
+    // Read own memory files (cognition/memory/*.md)
+    let memory = read_memory_dir(
+        &crate::agents::instance::resolve_path(inst_dir, "cognition/memory", "memory"),
+        "Memory"
+    );
+
+    // If this is an org router, also inject each member's memory
+    let org_member_memory = read_org_member_memory(inst_dir, instance);
 
     let prompt = format!(
         "You are an autonomous agent running in DAEMON MODE (not interactive).\n\
@@ -524,13 +530,14 @@ fn exec_agent(
          Respond with:\n\
          - EXEC: <skill_name> [args]  — to run a skill\n\
          - Or a direct text answer\n\n\
-         ## Persona\n{}\n\n## Available Skills\n{}{}\n\n## Task\n{}",
-        persona, skill_info, memory, query
+         ## Persona\n{}\n\n## Available Skills\n{}{}{}{}\n\n## Task\n{}",
+        persona, skill_info, vault_info, memory, org_member_memory, query
     );
 
     let output = std::process::Command::new("claude")
         .args(["--allowedTools", "", "-p"])
         .arg(&prompt)
+        .current_dir(inst_dir)
         .output();
 
     let response = match output {
@@ -549,7 +556,6 @@ fn exec_agent(
 
     let mut results = Vec::new();
     let mut has_exec = false;
-    let vault_env = load_vault_env().unwrap_or_default();
 
     for line in response.lines() {
         let line = line.trim();
@@ -660,6 +666,90 @@ fn find_skill_script(inst_dir: &std::path::Path, skill_name: &str) -> Option<std
         }
     }
     None
+}
+
+/// Read all *.md files from a memory directory into a formatted string.
+fn read_memory_dir(dir: &std::path::Path, heading: &str) -> String {
+    if !dir.exists() { return String::new(); }
+    let mut mem = String::new();
+    if let Ok(mut entries) = std::fs::read_dir(dir) {
+        let mut paths: Vec<_> = entries.filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+            .collect();
+        paths.sort_by_key(|e| e.file_name());
+        for entry in paths {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let name = entry.path().file_stem().unwrap_or_default().to_string_lossy().to_string();
+                mem.push_str(&format!("### {}\n{}\n\n", name, content));
+            }
+        }
+    }
+    if mem.is_empty() { String::new() } else { format!("\n\n## {}\n{}", heading, mem) }
+}
+
+/// If this instance is an org router, read each member's cognition/memory/*.md.
+fn read_org_member_memory(inst_dir: &std::path::Path, instance: &str) -> String {
+    // inst_dir is e.g. ~/.aide/instances/ntu.yiidtw — parent is instances/
+    let instances_dir = match inst_dir.parent() {
+        Some(p) => p,
+        None => return String::new(),
+    };
+
+    // Read own instance.toml to check if router
+    let own_toml = inst_dir.join("cognition/instance.toml");
+    let content = match std::fs::read_to_string(&own_toml) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    // Extract org and org_router fields
+    let org = content.lines()
+        .find(|l| l.trim_start().starts_with("org ="))
+        .and_then(|l| l.split_once('='))
+        .map(|(_, v)| v.trim().trim_matches('"').to_string());
+    let org_router = content.lines()
+        .find(|l| l.trim_start().starts_with("org_router ="))
+        .and_then(|l| l.split_once('='))
+        .map(|(_, v)| v.trim().trim_matches('"').to_string());
+
+    // Only proceed if I am the router
+    if org_router.as_deref() != Some(instance) { return String::new(); }
+    let org = match org { Some(o) => o, None => return String::new() };
+
+    // Scan sibling instances in same org
+    let entries = match std::fs::read_dir(instances_dir) {
+        Ok(e) => e,
+        Err(_) => return String::new(),
+    };
+
+    let mut sections = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let member_name = entry.file_name().to_string_lossy().to_string();
+        if member_name == instance { continue; }
+        let member_toml = entry.path().join("cognition/instance.toml");
+        if let Ok(mc) = std::fs::read_to_string(&member_toml) {
+            let member_org = mc.lines()
+                .find(|l| l.trim_start().starts_with("org ="))
+                .and_then(|l| l.split_once('='))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string());
+            if member_org.as_deref() != Some(org.as_str()) { continue; }
+        } else { continue; }
+
+        let mem = read_memory_dir(
+            &entry.path().join("cognition/memory"),
+            &member_name,
+        );
+        if !mem.is_empty() {
+            sections.push(format!("### Member: {}{}", member_name, mem));
+        }
+    }
+
+    if sections.is_empty() { String::new() }
+    else { format!("\n\n## Org Member Context\n{}", sections.join("\n")) }
+}
+
+pub fn github_vault_env() -> Vec<(String, String)> {
+    load_vault_env().unwrap_or_default()
 }
 
 fn load_vault_env() -> Result<Vec<(String, String)>> {

@@ -1541,17 +1541,40 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
         String::new()
     };
 
+    // Discover org members if this instance is a router
+    let manifest = mgr.get(instance)?.unwrap();
+    let org_members_info = if manifest.org_router.as_deref() == Some(instance) {
+        // I am the router — list my org members
+        if let Some(ref org) = manifest.org {
+            let all = mgr.list()?;
+            let members: Vec<String> = all.iter()
+                .filter(|i| i.org.as_deref() == Some(org.as_str()) && i.name != instance)
+                .map(|i| {
+                    let gh = mgr.get(&i.name).ok().flatten()
+                        .and_then(|m| m.github_repo)
+                        .unwrap_or_default();
+                    format!("  - {} (repo: {}, status: {})", i.name, gh, i.status)
+                })
+                .collect();
+            if members.is_empty() { String::new() }
+            else { format!("\n\n## Org Members (you are the router)\n{}", members.join("\n")) }
+        } else { String::new() }
+    } else { String::new() };
+
     // Compose prompt for Claude
     let prompt = format!(
-        "You are an agent assistant. Given the following agent persona and skills, \
-         answer the user's query by deciding which skill(s) to call.\n\n\
-         IMPORTANT: Respond ONLY with the skill command to execute, in this exact format:\n\
-         EXEC: <skill_name> [args]\n\n\
-         The skill_name must be ONLY the skill name (e.g. 'cool', 'mail', 'briefing'), NOT the instance name.\n\
-         If you need multiple skills, put each on its own line starting with EXEC:\n\
-         If no skill matches, respond with: NONE: <explanation>\n\n\
-         ## Persona\n{}\n\n## Available Skills\n{}\n\n## User Query\n{}",
-        persona, skill_info, query
+        "You are an agent router. Respond ONLY with action lines. No explanation, no markdown, no conversation.\n\n\
+         Actions (one per line):\n\
+         EXEC: <skill_name> [args]\n\
+         DISPATCH: <member_instance> <task description>\n\
+         REPLY: <message>\n\n\
+         Rules:\n\
+         - skill_name = skill name only (e.g. 'cool', 'mail'), NOT instance name\n\
+         - DISPATCH opens a GitHub issue on the member's repo\n\
+         - Multiple actions allowed\n\
+         - REPLY only if no action needed\n\n\
+         ## Persona\n{}\n\n## Skills\n{}{}\n\n## Query\n{}",
+        persona, skill_info, org_members_info, query
     );
 
     // Call claude -p
@@ -1586,6 +1609,7 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
 
     // Parse response — look for EXEC: lines
     let mut executed = false;
+    let mut exec_outputs: Vec<String> = Vec::new();
     for line in claude_response.lines() {
         let line = line.trim();
         if let Some(cmd) = line.strip_prefix("EXEC:") {
@@ -1603,6 +1627,7 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
                     exec_skill_script(&local_script, skill_args, &inst_dir, &scoped_env)?;
                 if !stdout.is_empty() {
                     print!("{}", stdout);
+                    exec_outputs.push(format!("Output of EXEC: {} {}:\n{}", skill_name, skill_args, stdout));
                 }
                 if !stderr.is_empty() {
                     eprint!("{}", stderr);
@@ -1620,6 +1645,38 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
                 println!("skill not found: {}", skill_name);
             }
             executed = true;
+        } else if let Some(cmd) = line.strip_prefix("DISPATCH:") {
+            let cmd = cmd.trim();
+            let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+            let target = parts[0];
+            let task = if parts.len() > 1 { parts[1] } else { query };
+
+            // Find target's github_repo
+            let target_repo = mgr.get(target).ok().flatten()
+                .and_then(|m| m.github_repo);
+
+            if let Some(repo) = target_repo {
+                eprintln!("  ✓ DISPATCH: {} → {}", target, task);
+                let title = if task.len() > 60 { format!("{}...", &task[..57]) } else { task.to_string() };
+                let body = format!("Dispatched by router `{}`.\n\n{}", instance, task);
+                let r = std::process::Command::new("gh")
+                    .args(["issue", "create", "--repo", &repo, "--title", &title, "--body", &body, "--label", "dispatch"])
+                    .output();
+                match r {
+                    Ok(o) if o.status.success() => {
+                        let url = String::from_utf8_lossy(&o.stdout);
+                        eprintln!("  ✓ issue opened: {}", url.trim());
+                        mgr.append_log(instance, &format!("dispatch: {} → {} ({})", target, task, url.trim()))?;
+                    }
+                    _ => eprintln!("  ✗ failed to open issue on {}", repo),
+                }
+            } else {
+                eprintln!("  ✗ DISPATCH: {} has no github_repo", target);
+            }
+            executed = true;
+        } else if let Some(explanation) = line.strip_prefix("REPLY:") {
+            println!("{}", explanation.trim());
+            executed = true;
         } else if let Some(explanation) = line.strip_prefix("NONE:") {
             println!("{}", explanation.trim());
             executed = true;
@@ -1629,6 +1686,57 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
     // If no EXEC: or NONE: found, just print the raw response
     if !executed {
         print!("{}", claude_response);
+    }
+
+    // Two-step dispatch: if we EXEC'd something but no DISPATCH, feed results back to LLM
+    if executed && !claude_response.contains("DISPATCH:") && !org_members_info.is_empty() && !exec_outputs.is_empty() {
+        let exec_results = exec_outputs.join("\n\n");
+        let follow_up = format!(
+            "You ran skills and got these results:\n\n{}\n\n\
+             Based on these results, which tasks should be DISPATCH'd to org members?\n\
+             Respond ONLY with DISPATCH: lines or REPLY: if nothing to dispatch.\n\n\
+             {}\n\nOriginal query: {}",
+            exec_results, org_members_info, query
+        );
+        {
+            let follow_resp = std::process::Command::new("claude")
+                .arg("-p")
+                .arg(&follow_up)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+
+            if let Some(resp) = follow_resp {
+                for line in resp.lines() {
+                    let line = line.trim();
+                    if let Some(cmd) = line.strip_prefix("DISPATCH:") {
+                        let cmd = cmd.trim();
+                        let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
+                        let target = parts[0];
+                        let task = if parts.len() > 1 { parts[1] } else { query };
+                        let target_repo = mgr.get(target).ok().flatten().and_then(|m| m.github_repo);
+                        if let Some(repo) = target_repo {
+                            eprintln!("  ✓ DISPATCH: {} → {}", target, task);
+                            let title: String = task.chars().take(60).collect();
+                            let body = format!("Dispatched by router `{}`.\n\n{}", instance, task);
+                            let r = std::process::Command::new("gh")
+                                .args(["issue", "create", "--repo", &repo, "--title", &title, "--body", &body, "--label", "dispatch"])
+                                .output();
+                            if let Ok(o) = r {
+                                if o.status.success() {
+                                    let url = String::from_utf8_lossy(&o.stdout);
+                                    eprintln!("  ✓ issue opened: {}", url.trim());
+                                    let _ = mgr.append_log(instance, &format!("dispatch: {} → {} ({})", target, task, url.trim()));
+                                }
+                            }
+                        }
+                    } else if let Some(msg) = line.strip_prefix("REPLY:") {
+                        println!("{}", msg.trim());
+                    }
+                }
+            }
+        }
     }
 
     Ok(())

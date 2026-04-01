@@ -1577,9 +1577,9 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
         persona, skill_info, org_members_info, query
     );
 
-    // Call claude -p
+    // Call claude -p with no tools (pure text output, no MCP)
     let output = std::process::Command::new("claude")
-        .arg("-p")
+        .args(["--allowedTools", "", "-p"])
         .arg(&prompt)
         .output();
 

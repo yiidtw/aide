@@ -510,7 +510,7 @@ fn exec_agent(
     );
 
     let output = std::process::Command::new("claude")
-        .arg("-p")
+        .args(["--allowedTools", "", "-p"])
         .arg(&prompt)
         .output();
 

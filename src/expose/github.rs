@@ -497,10 +497,15 @@ fn exec_agent(
         .unwrap_or_default();
 
     let prompt = format!(
-        "You are an agent assistant. Given the persona and skills below, \
-         answer the user's query by deciding which skill(s) to call.\n\
-         Respond with EXEC: <skill_name> [args] or answer directly if no skill matches.\n\n\
-         ## Persona\n{}\n\n## Skills\n{}\n\n## Query\n{}",
+        "You are an autonomous agent running in DAEMON MODE (not interactive).\n\
+         You have NO access to MCP tools, browser, or interactive UI.\n\
+         You can ONLY use the skills listed below via EXEC: <skill_name> [args].\n\
+         If no skill matches, answer directly from your knowledge.\n\
+         Do NOT ask for permissions, do NOT mention MCP, do NOT request user interaction.\n\n\
+         Respond with:\n\
+         - EXEC: <skill_name> [args]  — to run a skill\n\
+         - Or a direct text answer\n\n\
+         ## Persona\n{}\n\n## Available Skills\n{}\n\n## Task\n{}",
         persona, skill_info, query
     );
 

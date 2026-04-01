@@ -105,6 +105,8 @@ pub struct InstanceInfo {
     pub cron_count: usize,
     /// Organization this instance belongs to.
     pub org: Option<String>,
+    /// The router instance for this org.
+    pub org_router: Option<String>,
     /// Most recent log line, if any. Used for the "last activity" column in `aide ps`.
     pub last_activity: Option<String>,
 }
@@ -336,6 +338,7 @@ impl InstanceManager {
                         role: manifest.role,
                         cron_count: manifest.cron.len(),
                         org: manifest.org,
+                        org_router: manifest.org_router,
                         last_activity,
                     });
                 }

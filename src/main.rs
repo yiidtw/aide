@@ -1141,24 +1141,31 @@ fn cmd_ps(mgr: &InstanceManager, org_filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<24} {:<8} {:<8} {:<6} {:<8} {}",
-        "INSTANCE", "ORG", "STATUS", "CRON", "IMAGE", "LAST ACTIVITY"
-    );
-    println!("{}", "─".repeat(90));
-
+    // Group by org for display
+    let mut by_org: std::collections::BTreeMap<String, Vec<&instance::InstanceInfo>> = std::collections::BTreeMap::new();
     for inst in &instances {
-        let last = inst.last_activity.as_deref().unwrap_or("—");
-        let org = inst.org.as_deref().unwrap_or("—");
-        println!(
-            "{:<24} {:<8} {:<8} {:<6} {:<8} {}",
-            inst.name,
-            org,
-            inst.status,
-            inst.cron_count,
-            inst.agent_type,
-            last
-        );
+        let org = inst.org.as_deref().unwrap_or("—").to_string();
+        by_org.entry(org).or_default().push(inst);
+    }
+
+    for (org, members) in &by_org {
+        println!("── {} ──", org);
+        for inst in members {
+            let last = inst.last_activity.as_deref().unwrap_or("—");
+            // Truncate last activity
+            let last: String = last.chars().take(50).collect();
+            let is_router = inst.org_router.as_deref() == Some(&inst.name);
+            let role = if is_router { "★" } else { " " };
+            println!(
+                "  {} {:<24} {:<8} {:<6} {}",
+                role,
+                inst.name,
+                inst.status,
+                inst.cron_count,
+                last
+            );
+        }
+        println!();
     }
 
     Ok(())

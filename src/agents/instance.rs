@@ -55,6 +55,14 @@ pub struct InstanceManifest {
     /// Machine hostname where this instance runs.
     #[serde(default)]
     pub machine_id: Option<String>,
+    /// Organization this instance belongs to (e.g. `"ntu"`).
+    /// Instances in the same org can discover each other.
+    #[serde(default)]
+    pub org: Option<String>,
+    /// The router (leader) instance for this org (e.g. `"ntu.yiidtw"`).
+    /// The router dispatches external signals to org members.
+    #[serde(default)]
+    pub org_router: Option<String>,
 }
 
 /// A scheduled skill execution entry.
@@ -95,6 +103,8 @@ pub struct InstanceInfo {
     pub role: String,
     /// Number of cron entries registered.
     pub cron_count: usize,
+    /// Organization this instance belongs to.
+    pub org: Option<String>,
     /// Most recent log line, if any. Used for the "last activity" column in `aide ps`.
     pub last_activity: Option<String>,
 }
@@ -211,6 +221,8 @@ impl InstanceManager {
             github_repo: None,
             uuid: Some(uuid::Uuid::new_v4().to_string()),
             machine_id: Some(gethostname()),
+            org: None,
+            org_router: None,
         };
 
         // Write persona.md to occupation/persona.md if agent type has one
@@ -323,6 +335,7 @@ impl InstanceManager {
                         email: manifest.email,
                         role: manifest.role,
                         cron_count: manifest.cron.len(),
+                        org: manifest.org,
                         last_activity,
                     });
                 }

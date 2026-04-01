@@ -91,6 +91,9 @@ enum Command {
         /// Show all instances (including stopped)
         #[arg(short, long)]
         all: bool,
+        /// Filter by organization
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Stop a running agent instance
     Stop {
@@ -185,6 +188,9 @@ enum Command {
     Doctor {
         /// Instance name (checks all if omitted)
         instance: Option<String>,
+        /// Filter by organization
+        #[arg(long)]
+        org: Option<String>,
     },
 
     /// Migrate pre-#72 instances to git-native format (idempotent)
@@ -482,8 +488,8 @@ async fn main() -> Result<()> {
         Command::Call { instance, skill } => {
             cmd_exec(&mgr, &instance, &skill.join(" "), false)?;
         }
-        Command::Ps { all: _ } => {
-            cmd_ps(&mgr)?;
+        Command::Ps { all: _, org } => {
+            cmd_ps(&mgr, org.as_deref())?;
         }
         Command::Stop { instance } => {
             for inst in &instance {
@@ -523,8 +529,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Doctor { instance } => {
-            cmd_doctor(&mgr, instance.as_deref())?;
+        Command::Doctor { instance, org } => {
+            cmd_doctor(&mgr, instance.as_deref(), org.as_deref())?;
         }
 
         Command::Migrate { instance } => {
@@ -823,10 +829,21 @@ fn migrate_set_remote(mgr: &InstanceManager, name: &str, inst_dir: &Path) -> Res
 
 /// Run instance readiness checks. This is the generalized integration test
 /// for any aide instance — validates that all lifecycle features are functional.
-fn cmd_doctor(mgr: &InstanceManager, instance: Option<&str>) -> Result<()> {
+fn cmd_doctor(mgr: &InstanceManager, instance: Option<&str>, org_filter: Option<&str>) -> Result<()> {
     let names: Vec<String> = match instance {
         Some(n) => vec![n.to_string()],
-        None => mgr.list()?.into_iter().map(|i| i.name).collect(),
+        None => {
+            let mut list: Vec<String> = mgr.list()?.into_iter().map(|i| i.name).collect();
+            if let Some(org) = org_filter {
+                // Filter by org: need to load each manifest to check org field
+                list.retain(|name| {
+                    mgr.get(name).ok().flatten()
+                        .and_then(|m| m.org)
+                        .as_deref() == Some(org)
+                });
+            }
+            list
+        }
     };
 
     if names.is_empty() {
@@ -1110,27 +1127,36 @@ fn find_aide_binary() -> String {
 
 // ─── Command implementations ───
 
-fn cmd_ps(mgr: &InstanceManager) -> Result<()> {
-    let instances = mgr.list()?;
+fn cmd_ps(mgr: &InstanceManager, org_filter: Option<&str>) -> Result<()> {
+    let mut instances = mgr.list()?;
+    if let Some(org) = org_filter {
+        instances.retain(|i| i.org.as_deref() == Some(org));
+    }
     if instances.is_empty() {
-        println!("No agent instances. Use `aide run <image>` to create one.");
+        if let Some(org) = org_filter {
+            println!("No instances in org '{}'. Use `aide ps` to see all.", org);
+        } else {
+            println!("No agent instances. Use `aide run <image>` to create one.");
+        }
         return Ok(());
     }
 
     println!(
-        "{:<20} {:<12} {:<8} {:<6} {}",
-        "INSTANCE", "IMAGE", "STATUS", "CRON", "LAST ACTIVITY"
+        "{:<24} {:<8} {:<8} {:<6} {:<8} {}",
+        "INSTANCE", "ORG", "STATUS", "CRON", "IMAGE", "LAST ACTIVITY"
     );
-    println!("{}", "─".repeat(76));
+    println!("{}", "─".repeat(90));
 
     for inst in &instances {
         let last = inst.last_activity.as_deref().unwrap_or("—");
+        let org = inst.org.as_deref().unwrap_or("—");
         println!(
-            "{:<20} {:<12} {:<8} {:<6} {}",
+            "{:<24} {:<8} {:<8} {:<6} {:<8} {}",
             inst.name,
-            inst.agent_type,
+            org,
             inst.status,
             inst.cron_count,
+            inst.agent_type,
             last
         );
     }
@@ -1351,6 +1377,8 @@ fn cmd_run_from_github_clone(
                 github_repo: Some(github_repo.to_string()),
                 uuid: Some(uuid::Uuid::new_v4().to_string()),
                 machine_id: Some(instance::gethostname()),
+                org: None,
+                org_router: None,
             })
     } else {
         instance::InstanceManifest {
@@ -1364,6 +1392,8 @@ fn cmd_run_from_github_clone(
             github_repo: Some(github_repo.to_string()),
             uuid: Some(uuid::Uuid::new_v4().to_string()),
             machine_id: Some(instance::gethostname()),
+            org: None,
+            org_router: None,
         }
     };
 

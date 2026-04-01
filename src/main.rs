@@ -1607,6 +1607,17 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
 
     mgr.append_log(instance, &format!("prompt: {}", query))?;
 
+    // Log LLM's decision
+    let action_lines: Vec<&str> = claude_response.lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with("EXEC:") || t.starts_with("DISPATCH:") || t.starts_with("REPLY:") || t.starts_with("NONE:")
+        })
+        .collect();
+    if !action_lines.is_empty() {
+        let _ = mgr.append_log(instance, &format!("prompt-plan: {}", action_lines.join(" | ")));
+    }
+
     // Parse response — look for EXEC: lines
     let mut executed = false;
     let mut exec_outputs: Vec<String> = Vec::new();
@@ -1690,6 +1701,7 @@ fn cmd_exec_prompt(mgr: &InstanceManager, instance: &str, query: &str) -> Result
 
     // Two-step dispatch: if we EXEC'd something but no DISPATCH, feed results back to LLM
     if executed && !claude_response.contains("DISPATCH:") && !org_members_info.is_empty() && !exec_outputs.is_empty() {
+        let _ = mgr.append_log(instance, &format!("prompt-step2: analyzing {} exec results for dispatch", exec_outputs.len()));
         let exec_results = exec_outputs.join("\n\n");
         let follow_up = format!(
             "You ran skills and got these results:\n\n{}\n\n\

@@ -524,12 +524,17 @@ fn exec_agent(
     let prompt = format!(
         "You are an autonomous agent running in DAEMON MODE (not interactive).\n\
          You have NO access to MCP tools, browser, or interactive UI.\n\
-         You can ONLY use the skills listed below via EXEC: <skill_name> [args].\n\
-         If no skill matches, answer directly from your knowledge and memory.\n\
          Do NOT ask for permissions, do NOT mention MCP, do NOT request user interaction.\n\n\
-         Respond with:\n\
-         - EXEC: <skill_name> [args]  — to run a skill\n\
+         Actions (one per line):\n\
+         - EXEC: <skill_name> [args]  — run a skill\n\
+         - MEMORY: <filename.md> | <content>  — update a memory file (REQUIRES prior EXEC evidence)\n\
          - Or a direct text answer\n\n\
+         MEMORY rules (STRICT):\n\
+         - MEMORY: is ONLY allowed after a successful EXEC: that provides evidence\n\
+         - The memory content MUST reference the evidence (what skill ran, what it returned)\n\
+         - If you cannot produce evidence from an EXEC, you MUST NOT write to memory\n\
+         - Never write 'submitted', 'done', 'completed' to memory without EXEC output proving it\n\
+         - Memory writes are posted to the GitHub issue as an audit trail\n\n\
          ## Persona\n{}\n\n## Available Skills\n{}{}{}{}\n\n## Task\n{}",
         persona, skill_info, vault_info, memory, org_member_memory, query
     );
@@ -556,6 +561,7 @@ fn exec_agent(
 
     let mut results = Vec::new();
     let mut has_exec = false;
+    let mut memory_updates: Vec<(String, String)> = Vec::new(); // (filename, content)
 
     for line in response.lines() {
         let line = line.trim();
@@ -566,26 +572,65 @@ fn exec_agent(
             let skill_name = parts[0];
             let args = if parts.len() > 1 { parts[1] } else { "" };
 
-            // Try local script first, then aide-skill fallback
             let script = find_skill_script(inst_dir, skill_name);
             let exec_result = if let Some(script) = script {
                 exec_skill_raw(&script, args, inst_dir, &vault_env)
             } else {
-                // Fallback to aide-skill CLI
                 tracing::info!(skill = skill_name, "local script not found, trying aide-skill");
                 exec_aide_skill(skill_name, args, inst_dir, &vault_env)
             };
             match exec_result {
                 Ok((_, stdout, stderr)) => {
-                    if !stdout.trim().is_empty() { results.push(stdout); }
+                    if !stdout.trim().is_empty() { results.push(stdout.clone()); }
                     if !stderr.trim().is_empty() { results.push(format!("[stderr] {}", stderr)); }
                 }
                 Err(e) => results.push(format!("Error running {}: {}", skill_name, e)),
             }
+        } else if let Some(mem_cmd) = line.strip_prefix("MEMORY:") {
+            // MEMORY: <filename.md> | <content>
+            if let Some((filename, content)) = mem_cmd.trim().split_once('|') {
+                memory_updates.push((filename.trim().to_string(), content.trim().to_string()));
+            }
         }
     }
 
-    if has_exec { Ok(results.join("\n")) } else { Ok(response) }
+    // Apply memory updates — only if we have EXEC evidence
+    if !memory_updates.is_empty() {
+        let evidence = if has_exec && !results.is_empty() {
+            format!("\n\n<!-- evidence from EXEC -->\n{}", results.join("\n"))
+        } else {
+            String::new()
+        };
+
+        let mem_dir = crate::agents::instance::resolve_path(inst_dir, "cognition/memory", "memory");
+        let _ = std::fs::create_dir_all(&mem_dir);
+
+        for (filename, content) in &memory_updates {
+            // Sanitize filename — only allow .md files, no path traversal
+            let safe_name = std::path::Path::new(filename)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if safe_name.is_empty() || !safe_name.ends_with(".md") { continue; }
+
+            let mem_path = mem_dir.join(&safe_name);
+            let entry = format!(
+                "\n\n## Update ({})\n{}{}\n",
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                content,
+                evidence
+            );
+
+            // Append to existing file or create new
+            let existing = std::fs::read_to_string(&mem_path).unwrap_or_default();
+            let _ = std::fs::write(&mem_path, format!("{}{}", existing, entry));
+
+            results.push(format!("✅ memory updated: {} (evidence attached)", safe_name));
+            tracing::info!(instance, file = %safe_name, "memory updated with evidence");
+        }
+    }
+
+    if has_exec || !memory_updates.is_empty() { Ok(results.join("\n")) } else { Ok(response) }
 }
 
 fn exec_skill_raw(

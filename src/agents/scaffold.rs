@@ -110,7 +110,7 @@ console.log(`Hello, ${{name}}! I'm your aide agent.`);
     // cognition/memory/.gitkeep
     fs::write(dir.join("cognition/memory/.gitkeep"), "")?;
 
-    // CLAUDE.md — tells Claude Code where this agent's memory lives
+    // CLAUDE.md — tells Claude Code where this agent's memory lives and enforces evidence rule
     let claude_md = format!(
         r#"# {name}
 
@@ -121,6 +121,15 @@ This is an aide agent instance. You are running as `{name}`.
 Your persistent memory lives in `cognition/memory/`. Read and write there.
 
 @cognition/memory
+
+## Memory Write Rules
+
+NEVER write to `cognition/memory/` without evidence. Evidence means:
+- A skill was executed and returned output proving the claim
+- The output is included in the memory entry
+
+If you cannot produce skill output as evidence, do NOT update memory.
+When in doubt, open a GitHub issue on this repo with the evidence first.
 "#
     );
     fs::write(dir.join("CLAUDE.md"), claude_md)?;

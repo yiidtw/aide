@@ -167,20 +167,37 @@ pub fn start_github_issues_ticker(data_dir: String) {
                             };
                             let result = exec_agent(&inst.name, &inst_dir, &query);
 
-                            match &result {
-                                Ok(output) => {
+                            match result {
+                                Ok(agent_result) => {
                                     let _ = mgr.append_log(
                                         &inst.name,
                                         &format!("github-issue-result: #{} → ok", number),
                                     );
-                                    let result_body = if output.trim().is_empty() { "(no output)".to_string() }
-                                        else { truncate_for_comment(output) };
+                                    let result_body = if agent_result.output.trim().is_empty() {
+                                        "(no output)".to_string()
+                                    } else {
+                                        truncate_for_comment(&agent_result.output)
+                                    };
                                     if let Err(e) = post_comment(&client, &repo, &token, number, &result_body).await {
                                         error!(error = %e, "failed to post result on issue #{}", number);
                                     }
                                     // Commit memory changes back to repo
                                     if let Err(e) = commit_memory(&client, &repo, &token, &inst_dir, number).await {
                                         warn!(error = %e, "failed to commit memory for issue #{}", number);
+                                    }
+                                    // Close issue if task is done
+                                    if agent_result.done {
+                                        if let Err(e) = close_issue(&client, &repo, &token, number).await {
+                                            warn!(error = %e, "failed to close issue #{}", number);
+                                        } else {
+                                            let _ = mgr.append_log(&inst.name, &format!("github-issue-closed: #{}", number));
+                                        }
+                                    } else if agent_result.blocked.is_some() {
+                                        let _ = mgr.append_log(&inst.name, &format!(
+                                            "github-issue-blocked: #{} — {}",
+                                            number,
+                                            agent_result.blocked.as_deref().unwrap_or("")
+                                        ));
                                     }
                                     // Only advance last_seen on success
                                     state.last_seen_issue = state.last_seen_issue.max(number);
@@ -291,6 +308,28 @@ async fn fetch_issues(
 }
 
 /// Post a comment on an issue.
+async fn close_issue(
+    client: &reqwest::Client,
+    repo: &str,
+    token: &str,
+    issue_number: u64,
+) -> Result<()> {
+    let url = format!("{}/repos/{}/issues/{}", GITHUB_API, repo, issue_number);
+    let resp = client
+        .patch(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "aide-agent")
+        .header("Accept", "application/vnd.github+json")
+        .json(&serde_json::json!({ "state": "closed", "state_reason": "completed" }))
+        .send()
+        .await
+        .context("failed to close issue")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("close issue failed ({})", resp.status());
+    }
+    Ok(())
+}
+
 async fn post_comment(
     client: &reqwest::Client,
     repo: &str,
@@ -443,13 +482,13 @@ async fn poll_issue_comments(
             let result = exec_agent(instance, inst_dir, body);
 
             let result_body = match result {
-                Ok(output) => {
+                Ok(agent_result) => {
                     let _ = mgr.append_log(
                         instance,
                         &format!("github-comment-result: #{}/{} → ok", number, comment_id),
                     );
-                    if output.trim().is_empty() { "(no output)".to_string() }
-                    else { truncate_for_comment(&output) }
+                    if agent_result.output.trim().is_empty() { "(no output)".to_string() }
+                    else { truncate_for_comment(&agent_result.output) }
                 }
                 Err(e) => {
                     let _ = mgr.append_log(
@@ -482,12 +521,21 @@ async fn poll_issue_comments(
     Ok(())
 }
 
+struct AgentResult {
+    /// Output to post as GitHub comment
+    output: String,
+    /// Task is verifiably complete — close the issue
+    done: bool,
+    /// Task is blocked — leave open with this reason
+    blocked: Option<String>,
+}
+
 /// Execute agent skills via LLM routing.
 fn exec_agent(
     instance: &str,
     inst_dir: &std::path::Path,
     query: &str,
-) -> Result<String> {
+) -> Result<AgentResult> {
     // Read persona (try occupation/persona.md first, fall back to persona.md)
     let persona_path = crate::agents::instance::resolve_path(inst_dir, "occupation/persona.md", "persona.md");
     let persona = std::fs::read_to_string(persona_path).unwrap_or_default();
@@ -527,14 +575,16 @@ fn exec_agent(
          Do NOT ask for permissions, do NOT mention MCP, do NOT request user interaction.\n\n\
          Actions (one per line):\n\
          - EXEC: <skill_name> [args]  — run a skill\n\
-         - MEMORY: <filename.md> | <content>  — update a memory file (REQUIRES prior EXEC evidence)\n\
+         - MEMORY: <filename.md> | <content>  — update memory (REQUIRES prior EXEC evidence)\n\
+         - DONE: <one-line summary>  — task complete, will close this issue\n\
+         - BLOCKED: <reason>  — cannot complete, explain what is missing\n\
          - Or a direct text answer\n\n\
-         MEMORY rules (STRICT):\n\
-         - MEMORY: is ONLY allowed after a successful EXEC: that provides evidence\n\
-         - The memory content MUST reference the evidence (what skill ran, what it returned)\n\
-         - If you cannot produce evidence from an EXEC, you MUST NOT write to memory\n\
-         - Never write 'submitted', 'done', 'completed' to memory without EXEC output proving it\n\
-         - Memory writes are posted to the GitHub issue as an audit trail\n\n\
+         Rules:\n\
+         - Always end with DONE: or BLOCKED: — never leave the issue without a conclusion\n\
+         - DONE: only if you have EXEC evidence proving the task was completed\n\
+         - BLOCKED: if any required skill failed, token is missing, binary not found, etc.\n\
+         - MEMORY: only after successful EXEC (evidence required, audit trail posted to issue)\n\
+         - Never write 'submitted/done/completed' to memory without EXEC output proving it\n\n\
          ## Persona\n{}\n\n## Available Skills\n{}{}{}{}\n\n## Task\n{}",
         persona, skill_info, vault_info, memory, org_member_memory, query
     );
@@ -561,11 +611,17 @@ fn exec_agent(
 
     let mut results = Vec::new();
     let mut has_exec = false;
-    let mut memory_updates: Vec<(String, String)> = Vec::new(); // (filename, content)
+    let mut memory_updates: Vec<(String, String)> = Vec::new();
+    let mut done_summary: Option<String> = None;
+    let mut blocked_reason: Option<String> = None;
 
     for line in response.lines() {
         let line = line.trim();
-        if let Some(cmd) = line.strip_prefix("EXEC:") {
+        if let Some(summary) = line.strip_prefix("DONE:") {
+            done_summary = Some(summary.trim().to_string());
+        } else if let Some(reason) = line.strip_prefix("BLOCKED:") {
+            blocked_reason = Some(reason.trim().to_string());
+        } else if let Some(cmd) = line.strip_prefix("EXEC:") {
             has_exec = true;
             let cmd = cmd.trim();
             let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
@@ -630,7 +686,27 @@ fn exec_agent(
         }
     }
 
-    if has_exec || !memory_updates.is_empty() { Ok(results.join("\n")) } else { Ok(response) }
+    // Build output: exec results + done/blocked conclusion
+    let mut output_parts: Vec<String> = Vec::new();
+    if has_exec || !memory_updates.is_empty() {
+        output_parts.push(results.join("\n"));
+    } else if !response.trim().is_empty() {
+        output_parts.push(response.clone());
+    }
+
+    if let Some(ref summary) = done_summary {
+        output_parts.push(format!("\n✅ **DONE**: {}", summary));
+    } else if let Some(ref reason) = blocked_reason {
+        output_parts.push(format!("\n⚠️ **BLOCKED**: {}", reason));
+    }
+
+    let output = output_parts.join("\n");
+
+    Ok(AgentResult {
+        output,
+        done: done_summary.is_some(),
+        blocked: blocked_reason,
+    })
 }
 
 fn exec_skill_raw(

@@ -1,6 +1,7 @@
 mod aidefile;
 mod budget;
 mod daemon;
+mod mcp;
 mod registry;
 mod runner;
 mod vault;
@@ -87,6 +88,9 @@ enum Commands {
         persona: Option<String>,
     },
 
+    /// Start MCP stdio server for LLM tool integration
+    Mcp,
+
     /// Vault operations
     Vault {
         #[command(subcommand)]
@@ -124,6 +128,7 @@ async fn main() -> Result<()> {
         Commands::Import { url } => cmd_import(&url)?,
         Commands::Export { to, name } => cmd_export(&to, name.as_deref())?,
         Commands::Init { persona } => cmd_init(persona.as_deref())?,
+        Commands::Mcp => mcp::serve()?,
         Commands::Vault { command } => match command {
             VaultCommands::Get { key } => {
                 let val = vault::get(&key)?;

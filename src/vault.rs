@@ -61,6 +61,8 @@ fn parse_env(content: &str) -> HashMap<&str, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        // Strip "export " prefix if present
+        let line = line.strip_prefix("export ").unwrap_or(line);
         if let Some((key, val)) = line.split_once('=') {
             let val = val.trim_matches('"').trim_matches('\'');
             map.insert(key.trim(), val.to_string());
@@ -76,6 +78,37 @@ pub fn inject(cmd: &mut Command, secrets: &[(String, String)]) {
     for (key, val) in secrets {
         cmd.env(key, val);
     }
+}
+
+/// Get a single key's value from the vault. Prints to stdout.
+pub fn get(key: &str) -> Result<String> {
+    let pairs = decrypt_keys(
+        &default_vault_path(),
+        &default_key_path(),
+        &[key.to_string()],
+    )?;
+    Ok(pairs[0].1.clone())
+}
+
+/// List all keys in the vault (names only, no values).
+pub fn list_keys() -> Result<Vec<String>> {
+    let vault_path = default_vault_path();
+    let key_path = default_key_path();
+    if !vault_path.exists() || !key_path.exists() {
+        return Ok(vec![]);
+    }
+    let output = Command::new("age")
+        .args(["-d", "-i"])
+        .arg(&key_path)
+        .arg(&vault_path)
+        .output()
+        .context("Failed to run age decrypt")?;
+    if !output.status.success() {
+        bail!("age decrypt failed");
+    }
+    let plaintext = String::from_utf8(output.stdout)?;
+    let keys: Vec<String> = parse_env(&plaintext).keys().map(|k| k.to_string()).collect();
+    Ok(keys)
 }
 
 /// Default vault paths.

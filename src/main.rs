@@ -86,6 +86,23 @@ enum Commands {
         #[arg(long)]
         persona: Option<String>,
     },
+
+    /// Vault operations
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum VaultCommands {
+    /// Get a secret value by key
+    Get {
+        /// Key name
+        key: String,
+    },
+    /// List all keys in the vault (names only)
+    List,
 }
 
 #[tokio::main]
@@ -107,6 +124,18 @@ async fn main() -> Result<()> {
         Commands::Import { url } => cmd_import(&url)?,
         Commands::Export { to, name } => cmd_export(&to, name.as_deref())?,
         Commands::Init { persona } => cmd_init(persona.as_deref())?,
+        Commands::Vault { command } => match command {
+            VaultCommands::Get { key } => {
+                let val = vault::get(&key)?;
+                print!("{val}");
+            }
+            VaultCommands::List => {
+                let keys = vault::list_keys()?;
+                for k in keys {
+                    println!("{k}");
+                }
+            }
+        },
     }
 
     Ok(())

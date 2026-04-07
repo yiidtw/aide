@@ -1,76 +1,68 @@
 # Concepts
 
-Core ideas behind aide.sh, mapped to Docker equivalents where applicable.
+## What is an agent?
 
-## Images vs Instances
+An agent is a Claude Code project that can autonomously execute tasks. The difference between a regular project and an agent is:
 
-| Docker | aide.sh | Description |
-|--------|---------|-------------|
-| Image | Image | Immutable snapshot built from Agentfile.toml |
-| Container | Instance | Running copy of an image with its own state |
-| Dockerfile | Agentfile.toml | Declarative manifest |
-| docker build | aide.sh build | Package into image |
-| docker run | aide.sh run | Create instance from image |
-| docker exec | aide.sh exec | Run a command inside instance |
+1. **Aidefile** — a TOML config that defines persona, budget, vault, hooks, and triggers
+2. **aide binary** — the lifecycle manager that spawns `claude -p`, enforces budget, injects secrets, and handles triggers
 
-Images live in `~/.aide/images/`. Instances live in `~/.aide/instances/`.
+An agent is not a long-running process. It's a directory with an Aidefile. aide wakes it up on demand, gives it a task, and collects the result.
 
-## Agentfile.toml
+## Aidefile
 
-The manifest that defines an agent. Contains:
+The single config file that turns a Claude project into an agent. Everything aide needs to know is in the Aidefile:
 
-- **[agent]** — name, version, description, author
-- **[persona]** — pointer to a markdown file describing the agent's identity
-- **[skills.NAME]** — executable capabilities (scripts or prompts)
-- **[seed]** — static data bundled into the image
-- **[env]** — required and optional environment variables
-- **[soul]** — LLM routing preferences
+- **persona** — who the agent is (name, style)
+- **budget** — token limit and retry policy
+- **vault** — which secrets to inject
+- **hooks** — lifecycle callbacks (on_spawn, on_complete)
+- **trigger** — what wakes the agent up (manual, issue, cron)
+- **memory** — auto-compaction threshold
+- **skills** — which skill sets to include
 
-## Skills
+See the [Aidefile reference](../guide/aidefile.md) for all options.
 
-A skill is a named capability. Two types:
+## Registry
 
-- **Script-based** — a shell script (`skills/hello.sh`) that receives args via `$1`, `$2`, etc.
-- **Prompt-based** — a markdown file (`skills/summarize.md`) interpreted by an LLM at runtime.
+aide keeps a registry at `~/.aide/config.toml` mapping agent names to directories:
 
-Skills are invoked with `aide.sh exec <instance> <skill> [args...]`.
-
-## Persona
-
-A markdown file that describes who the agent is. Used by LLMs when the agent runs in semantic mode. Has no effect in explicit (non-LLM) mode.
-
-## Vault
-
-Encrypted secret storage. Secrets are injected as environment variables at skill execution time. Three-tier scoping:
-
-1. **Per-skill env** — highest priority, set in `[skills.NAME] env`
-2. **Per-agent env** — set in `[env]`
-3. **Vault** — global secrets, lowest priority
-
-See [Vault & Secrets](../guide/vault.md) for details.
-
-## Semantic injection (the `-p` flag)
-
-By default, `aide.sh exec` runs skills explicitly -- you name the skill and pass args.
-
-Add `-p` and the input becomes a natural language prompt routed through an LLM:
-
-```bash
-# explicit: you pick the skill and args
-aide.sh exec bot notifications
-
-# semantic: LLM picks the skill and args
-aide.sh exec -p bot "do I have new mail?"
+```
+reviewer  →  ~/projects/code-reviewer
+writer    →  ~/projects/blog-writer
+ops       →  ~/.aide/ops
 ```
 
-The agent itself is unchanged. The `-p` flag wraps it with an LLM reasoning layer. Without `-p`, no LLM is involved -- the human acts as the reasoning layer.
+There are two ways to create agents:
 
-## MCP (Model Context Protocol)
+- **`aide spawn <name>`** — creates a new directory under `~/.aide/<name>/` with a template Aidefile
+- **`aide register <path>`** — registers an existing Claude project that already has an Aidefile
 
-MCP lets LLM hosts (Claude Code, Cursor, etc.) call aide.sh agents as tools. Running `aide.sh setup-mcp` registers your agents so that an LLM can:
+Either way, once registered, you can `aide run <name> "task"`.
 
-- List available agents and skills
-- Execute skills and read output
-- Access logs
+## How aide run works
 
-See [MCP Integration](../guide/mcp.md) for setup instructions.
+```
+aide run reviewer "Review PR #42"
+       │
+       ├─ resolve "reviewer" → ~/projects/code-reviewer
+       ├─ load Aidefile
+       ├─ decrypt vault → env vars
+       ├─ run on_spawn hooks
+       ├─ loop: claude -p "Review PR #42"
+       │    └─ check budget after each invocation
+       ├─ run on_complete hooks
+       └─ check memory compaction threshold
+```
+
+aide is the lifecycle manager. Claude Code is the runtime. All intelligence is in Claude Code — aide just handles who to wake up, how much to spend, what secrets to give, and when to stop.
+
+## Daemon
+
+`aide up` starts a background polling loop that checks triggers:
+
+- **issue** — polls `gh issue list` for issues with the agent's label
+- **cron** — runs on a schedule (coming soon)
+- **manual** — no auto-trigger, only responds to `aide run`
+
+When a trigger fires, the daemon calls `aide run` for that agent.

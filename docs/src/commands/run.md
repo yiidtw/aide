@@ -1,55 +1,50 @@
-# aide.sh run
+# aide run
 
-Create and start an agent instance from an image.
+Execute a task in an agent's directory.
 
 ## Usage
 
+```bash
+aide run <agent> <task>
 ```
-aide.sh run <IMAGE> [--name NAME] [-d]
-```
 
-**IMAGE** can be:
-- A local agent type defined in `aide.toml` (e.g. `reviewer`)
-- A registry reference in `<user>/<type>` format (e.g. `aide/github-reviewer`)
-
-## Options
-
-| Flag | Description |
-|------|-------------|
-| `--name NAME` | Set instance name (default: `<type>.<user>`) |
-| `-d, --detach` | Run in background (default for agents) |
+- **agent** — registered name or path to directory with Aidefile
+- **task** — natural language task description
 
 ## Examples
 
 ```bash
-aide.sh run reviewer                       # local type from aide.toml
-aide.sh run aide/github-reviewer           # pull from registry, then run
-aide.sh run aide/github-reviewer --name reviewer
+# By registered name
+aide run reviewer "Review PR #42"
+
+# By path
+aide run ./my-agent "Summarize recent changes"
+aide run ~/projects/ops "Check server health"
 ```
 
 ## What happens
 
-1. Resolves the image: local `aide.toml` definition or registry pull (`<user>/<type>` format).
-2. Derives instance name. Default is `<type>.<USER>` where `$USER` comes from the environment.
-3. Creates the instance directory under `~/.aide/instances/<name>/` with subdirectories `memory/` and `logs/`.
-4. Copies `persona.md` from the agent type if one exists.
-5. Writes `instance.toml` manifest (name, type, email, role, domains, cron entries, creation timestamp).
-6. Sets up cron schedules declared in the Agentfile.
+1. Resolve agent name → directory path
+2. Load and parse Aidefile
+3. Decrypt vault secrets (if configured)
+4. Run `on_spawn` hooks
+5. Loop: invoke `claude -p` with the task
+   - Track token usage after each invocation
+   - Stop if budget exhausted or task complete
+6. Run `on_complete` hooks
+7. Check memory compaction threshold
 
-## Instance directory layout
+## Output
 
 ```
-~/.aide/instances/<name>/
-  instance.toml     # manifest
-  persona.md        # copied from agent type
-  Agentfile.toml    # agent package spec
-  skills/           # executable skill scripts
-  seed/             # read-only knowledge files
-  memory/           # writable state
-  logs/             # daily log files
+▸ Running task in ~/projects/code-reviewer
+  agent: Senior Reviewer
+  budget: 100000 tokens
+✓ Task completed (23,847 tokens used)
 ```
 
-## Errors
+Or on budget exhaustion:
 
-- If the instance name already exists, the command fails with a message suggesting `aide rm <name>` first.
-- If the image is a registry reference that has not been pulled, it is pulled automatically.
+```
+✗ Task incomplete (100000 tokens used, budget exhausted)
+```

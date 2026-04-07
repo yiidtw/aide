@@ -1,66 +1,87 @@
 # aide.sh
 
-**Deploy AI agents, just like Docker.**
+**One file to agentize your Claude project.**
 
-aide.sh is a CLI tool for packaging, deploying, and managing AI agents. One Rust binary, no runtime dependencies.
+aide is a lifecycle manager for Claude Code agents. Drop an `Aidefile` into any Claude Code project — it becomes an agent with a persona, budget, vault, hooks, and triggers.
 
-## Why aide.sh?
+## Why aide?
 
-- **Docker mental model** — `build`, `run`, `exec`, `push`, `pull`. If you know Docker, you know aide.sh.
-- **Works without AI** — agents are structured skill runners (shell scripts). No LLM required.
-- **Three execution modes** — ad-hoc (human drives), sub-agent (LLM drives via MCP), standalone (`-p` flag: agent has its own LLM brain).
-- **Local-first** — agents run on your machine, secrets stay in your encrypted vault.
-- **MCP native** — Claude Code, Codex, Gemini can control your agents as subagents.
+- **Minimal** — one Rust binary, one config file. No runtime, no containers, no framework.
+- **Claude Code native** — `aide run` calls `claude -p` under the hood. All intelligence is in Claude Code.
+- **Fire and forget** — set a token budget, define triggers, and walk away. aide handles the rest.
+- **Secure** — age-encrypted vault secrets injected as env vars at spawn time. Never enters the LLM context window.
 
 ## Quick taste
 
 ```bash
-# install
-curl -fsSL https://aide.sh/install | bash
+# Install
+cargo install aide-sh
 
-# pull an agent from the hub
-aide pull aide/github-reviewer
-aide run aide/github-reviewer --name reviewer
+# Turn any Claude project into an agent
+cd ~/projects/code-reviewer
+aide init --persona "Senior Reviewer"
+# ✓ Created Aidefile
 
-# use it — no AI needed
-aide exec reviewer pr list
-aide exec reviewer diff
+# One-shot: fire and forget
+aide run . "Review PR #42 and leave comments"
+# ▸ Running task in ~/projects/code-reviewer
+#   agent: Senior Reviewer
+#   budget: 200000 tokens
+# ✓ Task completed (23,847 tokens used)
 
-# or let AI decide what to call
-aide exec -p reviewer "are there any PRs that need review?"
+# Or register and run by name
+aide register . --name reviewer
+aide run reviewer "Review all open PRs"
 
-# monitor everything
-aide dash
+# Start daemon: agents wake up on triggers
+aide up
 ```
 
-**What does `-p` do?** It gives the agent a brain. Without `-p`, you call skills directly by name. With `-p`, an LLM (Claude CLI or local ollama) reads the agent's persona and skill list, interprets your natural language query, and decides which skills to invoke.
+## What is an Aidefile?
 
-## Dashboard
+```toml
+[persona]
+name = "Senior Reviewer"
+style = "direct, cares about edge cases"
 
-![aide.sh dashboard](./images/dash-demo.png)
+[budget]
+tokens = "100k"
+max_retries = 3
 
-Built-in observability. See every agent's skills, cron jobs, usage analytics, and logs — all in one place.
+[hooks]
+on_spawn = ["inject-vault"]
+on_complete = ["commit-memory"]
 
-## How it works
+[trigger]
+on = "issue"
 
+[vault]
+keys = ["GITHUB_TOKEN"]
 ```
-Agentfile.toml          ← agent manifest (like Dockerfile)
-├── persona.md          ← agent personality
-├── skills/*.sh         ← executable capabilities (shell scripts)
-├── seed/               ← initial knowledge
-└── [limits]            ← timeout, token budget, retry policy
 
-aide build agent/    → .tar.gz archive
-aide push agent/     → upload to hub
-aide pull user/agent → download from hub
-aide run user/agent  → create instance
-aide exec inst skill → run a skill
-aide up              → daemon: cron + dashboard
-```
+That's it. Your Claude project is now an agent.
+
+## What aide handles
+
+| Feature | Description |
+|---------|-------------|
+| **Budget** | Token limits per task. Auto-retry with remaining budget. |
+| **Vault** | age-encrypted secrets injected as env vars at spawn time. |
+| **Triggers** | GitHub Issues, cron, manual. Daemon polls and dispatches. |
+| **Hooks** | on_spawn, on_complete. Inject vault, commit memory, notify. |
+| **Memory** | Auto-compact when threshold is hit. Per-agent memory namespace. |
+| **Teams** | Import/export agent templates via git. |
+
+## Philosophy
+
+Claude Code is already a great agent runtime. aide doesn't replace it.
+
+aide is the **lifecycle manager** — who to wake up, how much to spend, what secrets to give, when to stop.
+
+> Aidefile is to Claude Code what Dockerfile is to Linux.
 
 ## Next steps
 
 - [Installation](./getting-started/install.md) — get the binary
-- [Quick Start](./getting-started/quickstart.md) — build your first agent in 5 minutes
-- [Concepts](./getting-started/concepts.md) — images, instances, skills, vault
-- [Execution Modes](./arch/semantic-injection.md) — ad-hoc, sub-agent, standalone
+- [Quick Start](./getting-started/quickstart.md) — your first agent in 2 minutes
+- [Concepts](./getting-started/concepts.md) — agents, Aidefiles, registry

@@ -1,93 +1,73 @@
 # Quick Start
 
-Build and run your first agent in under 5 minutes.
+Create your first agent in 2 minutes.
 
-## 1. Scaffold a new agent
+## 1. Initialize an Aidefile
 
 ```bash
-$ aide.sh init school
-Created school/
-  Agentfile.toml
-  persona.md
-  skills/
-    hello.sh
+cd ~/projects/my-reviewer
+aide init --persona "Code Reviewer"
+# ✓ Created Aidefile in ~/projects/my-reviewer
 ```
 
-## 2. Edit the Agentfile
+This creates an `Aidefile` in the current directory. That's all it takes to turn a Claude project into an agent.
 
-Open `school/Agentfile.toml`. The template looks like this:
+## 2. Edit the Aidefile
 
 ```toml
-[agent]
-name = "school"
-version = "0.1.0"
-description = "My first agent"
-author = "you"
-
 [persona]
-file = "persona.md"
+name = "Code Reviewer"
+style = "thorough, direct"
 
-[skills.hello]
-script = "skills/hello.sh"
-description = "Say hello"
-usage = "hello [name]"
+[budget]
+tokens = "100k"
+max_retries = 3
 
-[seed]
-dir = "seed/"
+[trigger]
+on = "manual"
 
-[env]
-required = []
-optional = []
+[vault]
+keys = ["GITHUB_TOKEN"]
 ```
 
-Add a skill, change the description, or leave the defaults -- it works out of the box.
-
-## 3. Build the image
+## 3. Run a task
 
 ```bash
-$ aide.sh build school/
-Building school v0.1.0 ...
-Image: school:0.1.0 (sha256:a3f8...)
+aide run . "Review the latest PR and leave comments"
+# ▸ Running task in ~/projects/my-reviewer
+#   agent: Code Reviewer
+#   budget: 100000 tokens
+# ✓ Task completed (18,432 tokens used)
 ```
 
-This packages the Agentfile, persona, skills, and seed data into a compressed image stored in `~/.aide/images/`.
+aide calls `claude -p` with the task, injects vault secrets as env vars, and enforces the token budget.
 
-## 4. Run an instance
+## 4. Register for convenience
 
 ```bash
-$ aide.sh run school --name school
-Instance "school" started (id: school)
+aide register . --name reviewer
+aide run reviewer "Check all open PRs for security issues"
 ```
 
-## 5. Execute a skill
+## 5. Automate with triggers
+
+Change `[trigger]` in the Aidefile:
+
+```toml
+[trigger]
+on = "issue"
+```
+
+Then start the daemon:
 
 ```bash
-$ aide.sh exec school hello
-Hello, world!
-
-$ aide.sh exec school hello Alice
-Hello, Alice!
+aide up
 ```
 
-## 6. List available skills
-
-```bash
-$ aide.sh exec school
-Available skills:
-  hello    Say hello
-```
-
-## 7. Open the dashboard
-
-```bash
-$ aide.sh dash
-Dashboard running at http://localhost:3939
-```
-
-The dashboard shows all running instances, recent logs, and skill status.
+Now the agent wakes up whenever a GitHub Issue is opened with the matching label.
 
 ## What's next?
 
-- [Concepts](./concepts.md) — understand images, instances, vault, and semantic injection
-- [Agentfile.toml reference](../guide/agentfile.md) — full configuration guide
-- [Skills](../guide/skills.md) — writing script and prompt skills
+- [Concepts](./concepts.md) — understand agents, Aidefiles, the registry
+- [Aidefile reference](../guide/aidefile.md) — full configuration guide
+- [Vault & Secrets](../guide/vault.md) — encrypting and injecting secrets

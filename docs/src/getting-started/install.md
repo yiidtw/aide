@@ -1,52 +1,32 @@
 # Installation
 
-aide.sh ships as a single static binary. No runtime dependencies.
-
-## One-line install (recommended)
+## From crates.io (recommended)
 
 ```bash
-curl -fsSL https://aide.sh/install | bash
+cargo install aide-sh
 ```
 
-This detects your OS and architecture, downloads the latest release, and places the binary at `~/.local/bin/aide`.
+This installs the `aide` binary.
 
-## Cargo install
+## Prerequisites
 
-If you have a Rust toolchain:
-
-```bash
-cargo install aide
-```
-
-## Build from source
-
-```bash
-git clone https://github.com/AIDEdotsh/aide.git
-cd aide
-cargo build --release
-cp target/release/aide ~/.local/bin/
-```
+- **Rust toolchain** — [rustup.rs](https://rustup.rs) if you don't have `cargo`
+- **Claude Code CLI** — aide calls `claude -p` under the hood. Install from [claude.ai/code](https://claude.ai/code)
+- **age** (optional) — for vault encryption. `brew install age` or your package manager
 
 ## Verify
 
 ```bash
-$ aide --version
-aide 0.1.0
+aide --version
+# aide-sh 2.0.0-alpha.2
 ```
 
-Make sure `~/.local/bin` is in your `PATH`:
+## From source
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-## Shell alias (optional)
-
-For convenience, alias the binary to `aide.sh`:
-
-```bash
-echo 'alias aide.sh="aide"' >> ~/.bashrc
-source ~/.bashrc
+git clone https://github.com/yiidtw/aide.git
+cd aide
+cargo install --path .
 ```
 
 ## Next

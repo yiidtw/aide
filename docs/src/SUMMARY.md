@@ -10,32 +10,28 @@
 
 # User Guide
 
-- [Agentfile.toml](./guide/agentfile.md)
-- [Skills](./guide/skills.md)
+- [Aidefile](./guide/aidefile.md)
+- [Budget](./guide/budget.md)
 - [Vault & Secrets](./guide/vault.md)
-- [Cron & Scheduling](./guide/cron.md)
-- [MCP Integration](./guide/mcp.md)
-- [Dashboard](./guide/dashboard.md)
-- [Expose (Email / PWA)](./guide/expose.md)
+- [Hooks](./guide/hooks.md)
+- [Triggers & Daemon](./guide/triggers.md)
+- [Memory](./guide/memory.md)
+- [Skills](./guide/skills.md)
+- [Teams (Import / Export)](./guide/teams.md)
 
 # Command Reference
 
-- [aide.sh run](./commands/run.md)
-- [aide.sh exec](./commands/exec.md)
-- [aide.sh build / push / pull](./commands/build.md)
-- [aide.sh init / lint](./commands/init-lint.md)
-- [aide.sh mcp](./commands/mcp.md)
-- [aide.sh dash](./commands/dash.md)
-- [aide.sh mount / unmount](./commands/mount.md)
-
-# Hub
-
-- [Agent Hub](./hub.md)
+- [aide init](./commands/init.md)
+- [aide run](./commands/run.md)
+- [aide spawn](./commands/spawn.md)
+- [aide register / unregister](./commands/register.md)
+- [aide list](./commands/list.md)
+- [aide up / down](./commands/daemon.md)
+- [aide import / export](./commands/import-export.md)
+- [aide vault](./commands/vault.md)
+- [aide mcp](./commands/mcp.md)
 
 # Architecture
 
-- [Agent Soul — LLM as Runtime](./arch/soul.md)
-- [Execution Modes](./arch/semantic-injection.md)
-- [Docker Comparison](./arch/docker-comparison.md)
-- [Git-Native Agent Methodology](./arch/git-native.md)
-- [Roadmap: Local → Edge](./arch/roadmap.md)
+- [Philosophy](./arch/philosophy.md)
+- [How aide run Works](./arch/run-lifecycle.md)

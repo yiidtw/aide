@@ -50,6 +50,9 @@ pub struct Budget {
     /// Max re-invocations if task is incomplete.
     #[serde(default = "Budget::default_max_retries")]
     pub max_retries: u32,
+    /// Timeout per invocation as string like "30s", "5m", "1h".
+    #[serde(default)]
+    pub timeout: Option<String>,
 }
 
 impl Budget {
@@ -64,6 +67,11 @@ impl Budget {
     pub fn tokens_limit(&self) -> u64 {
         parse_token_str(&self.tokens)
     }
+
+    /// Parse timeout string to Duration. Supports "30s", "5m", "1h".
+    pub fn timeout_duration(&self) -> Option<std::time::Duration> {
+        self.timeout.as_deref().map(parse_duration)
+    }
 }
 
 impl Default for Budget {
@@ -71,8 +79,24 @@ impl Default for Budget {
         Self {
             tokens: Self::default_tokens(),
             max_retries: Self::default_max_retries(),
+            timeout: None,
         }
     }
+}
+
+/// Parse duration strings: "30s" → 30s, "5m" → 300s, "1h" → 3600s.
+pub fn parse_duration(s: &str) -> std::time::Duration {
+    let s = s.trim().to_lowercase();
+    let secs = if let Some(n) = s.strip_suffix('s') {
+        n.parse::<u64>().unwrap_or(300)
+    } else if let Some(n) = s.strip_suffix('m') {
+        n.parse::<u64>().unwrap_or(5) * 60
+    } else if let Some(n) = s.strip_suffix('h') {
+        n.parse::<u64>().unwrap_or(1) * 3600
+    } else {
+        s.parse::<u64>().unwrap_or(300)
+    };
+    std::time::Duration::from_secs(secs)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -260,5 +284,43 @@ keys = ["GITHUB_TOKEN"]
         assert_eq!(af.skills.include, vec!["code-review", "test"]);
         assert!(af.trigger.is_issue());
         assert_eq!(af.vault.keys, vec!["GITHUB_TOKEN"]);
+    }
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration("30s"), std::time::Duration::from_secs(30));
+        assert_eq!(parse_duration("5m"), std::time::Duration::from_secs(300));
+        assert_eq!(parse_duration("1h"), std::time::Duration::from_secs(3600));
+        assert_eq!(parse_duration("120"), std::time::Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_budget_with_timeout() {
+        let content = r#"
+[persona]
+name = "Test"
+
+[budget]
+tokens = "50k"
+timeout = "10m"
+"#;
+        let af: Aidefile = toml::from_str(content).unwrap();
+        assert_eq!(
+            af.budget.timeout_duration(),
+            Some(std::time::Duration::from_secs(600))
+        );
+    }
+
+    #[test]
+    fn test_budget_without_timeout() {
+        let content = r#"
+[persona]
+name = "Test"
+
+[budget]
+tokens = "50k"
+"#;
+        let af: Aidefile = toml::from_str(content).unwrap();
+        assert_eq!(af.budget.timeout_duration(), None);
     }
 }

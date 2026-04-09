@@ -1,6 +1,7 @@
 //! Daemon — polls triggers and dispatches tasks to agents.
 
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::aidefile;
@@ -19,8 +20,11 @@ pub async fn start() -> Result<()> {
 
     let _guard = PidGuard(pid_path.clone());
 
+    // Track last cron fire time per agent to avoid double-dispatch
+    let mut last_cron_fire: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+
     loop {
-        if let Err(e) = tick(&config).await {
+        if let Err(e) = tick(&config, &mut last_cron_fire).await {
             tracing::error!("Tick error: {e:#}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(poll_secs)).await;
@@ -44,7 +48,10 @@ pub fn stop() -> Result<()> {
 }
 
 /// One tick: check all agents for pending triggers.
-async fn tick(config: &registry::Config) -> Result<()> {
+async fn tick(
+    config: &registry::Config,
+    last_cron_fire: &mut HashMap<String, chrono::DateTime<chrono::Utc>>,
+) -> Result<()> {
     for agent in &config.agents {
         let path = PathBuf::from(shellexpand::tilde(&agent.path).as_ref());
         if !aidefile::exists(&path) {
@@ -61,7 +68,7 @@ async fn tick(config: &registry::Config) -> Result<()> {
         if af.trigger.is_issue() {
             check_github_issues(&agent.name, &path, &af).await?;
         } else if let Some(cron_expr) = af.trigger.cron_expr() {
-            check_cron(&agent.name, &path, cron_expr)?;
+            check_cron(&agent.name, &path, cron_expr, last_cron_fire)?;
         }
         // manual triggers: skip (only via `aide run`)
     }
@@ -140,9 +147,52 @@ async fn check_github_issues(
 }
 
 /// Check if cron trigger should fire now.
-fn check_cron(_agent_name: &str, _agent_dir: &PathBuf, _cron_expr: &str) -> Result<()> {
-    // TODO: implement cron schedule matching
-    // For now, rely on system crontab
+fn check_cron(
+    agent_name: &str,
+    agent_dir: &PathBuf,
+    cron_expr: &str,
+    last_fire: &mut HashMap<String, chrono::DateTime<chrono::Utc>>,
+) -> Result<()> {
+    use std::str::FromStr;
+
+    // cron crate uses 7-field format: sec min hour dom month dow year
+    // User writes 5-field: min hour dom month dow
+    // Prepend "0 " (second=0) and append " *" (year=any)
+    let full_expr = format!("0 {} *", cron_expr);
+    let schedule = cron::Schedule::from_str(&full_expr)
+        .map_err(|e| anyhow::anyhow!("Invalid cron expression '{}': {}", cron_expr, e))?;
+
+    let now = chrono::Utc::now();
+    let last = last_fire.get(agent_name).copied().unwrap_or(now);
+
+    // Check if there's a scheduled time between last check and now
+    let should_fire = schedule.after(&last).take(1).any(|t| t <= now);
+
+    if !should_fire {
+        return Ok(());
+    }
+
+    tracing::info!(agent_name, cron_expr, "Cron trigger fired");
+    last_fire.insert(agent_name.to_string(), now);
+
+    let task = format!("Scheduled run (cron: {cron_expr}). Check for pending work and execute.");
+
+    match crate::runner::run(agent_dir, &task) {
+        Ok(result) => {
+            if result.success {
+                tracing::info!(agent_name, tokens = result.tokens_used, "Cron task completed");
+            } else {
+                tracing::warn!(
+                    agent_name,
+                    tokens = result.tokens_used,
+                    "Cron task incomplete (budget exhausted)"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(agent_name, "Cron task failed: {e:#}");
+        }
+    }
     Ok(())
 }
 
@@ -200,5 +250,25 @@ mod tests {
         assert_eq!(parse_interval("60s"), 60);
         assert_eq!(parse_interval("5m"), 300);
         assert_eq!(parse_interval("120"), 120);
+    }
+
+    #[test]
+    fn test_cron_parse_5field() {
+        use std::str::FromStr;
+        // User writes 5-field, we prepend "0 " and append " *"
+        let user_expr = "0 8 * * *"; // daily at 8:00
+        let full = format!("0 {} *", user_expr);
+        let schedule = cron::Schedule::from_str(&full);
+        assert!(schedule.is_ok(), "Should parse 5-field cron: {:?}", schedule.err());
+    }
+
+    #[test]
+    fn test_cron_schedule_fires() {
+        use std::str::FromStr;
+        let schedule = cron::Schedule::from_str("* * * * * * *").unwrap();
+        let now = chrono::Utc::now();
+        let past = now - chrono::Duration::seconds(5);
+        let fired = schedule.after(&past).take(1).any(|t| t <= now);
+        assert!(fired, "Every-second schedule should fire");
     }
 }

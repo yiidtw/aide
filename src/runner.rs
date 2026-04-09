@@ -4,7 +4,8 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use wait_timeout::ChildExt;
 
 use crate::aidefile::Aidefile;
 use crate::budget::BudgetTracker;
@@ -26,6 +27,7 @@ pub struct RunResult {
 /// 5. Run on_complete hooks
 pub fn run(agent_dir: &Path, task: &str) -> Result<RunResult> {
     let af = crate::aidefile::load(agent_dir)?;
+    let timeout = af.budget.timeout_duration();
     let secrets = resolve_vault(&af)?;
     run_hooks(agent_dir, &af.hooks.on_spawn, &secrets)?;
 
@@ -34,7 +36,12 @@ pub fn run(agent_dir: &Path, task: &str) -> Result<RunResult> {
     let mut success = false;
 
     while tracker.can_invoke() {
-        let result = invoke_claude(agent_dir, task, &secrets, tracker.remaining())?;
+        let result = invoke_claude(agent_dir, task, &secrets, tracker.remaining(), timeout)?;
+        if result.timed_out {
+            tracing::warn!("Task timed out");
+            last_output = result.output;
+            break;
+        }
         tracker.record(result.tokens_used);
         last_output = result.output;
         if result.success {
@@ -61,12 +68,13 @@ pub fn run(agent_dir: &Path, task: &str) -> Result<RunResult> {
     })
 }
 
-/// Spawn a single `claude -p` invocation.
+/// Spawn a single `claude -p` invocation with optional timeout.
 fn invoke_claude(
     agent_dir: &Path,
     task: &str,
     secrets: &[(String, String)],
     _max_tokens: u64,
+    timeout: Option<std::time::Duration>,
 ) -> Result<InvokeResult> {
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
@@ -78,22 +86,62 @@ fn invoke_claude(
     // Vault injection: secrets as env vars, NEVER in the prompt
     vault::inject(&mut cmd, secrets);
 
-    let output = cmd.output().context("Failed to spawn claude")?;
+    if let Some(dur) = timeout {
+        // Spawn child with piped stdout and wait with timeout
+        cmd.stdout(Stdio::piped());
+        let mut child = cmd.spawn().context("Failed to spawn claude")?;
+        match child.wait_timeout(dur)? {
+            Some(status) => {
+                // Process exited within timeout
+                let stdout = read_child_stdout(&mut child);
+                let tokens_used = extract_token_usage(&stdout);
+                Ok(InvokeResult {
+                    success: status.success(),
+                    tokens_used,
+                    output: stdout,
+                    timed_out: false,
+                })
+            }
+            None => {
+                // Timeout — kill the process
+                let _ = child.kill();
+                let _ = child.wait();
+                Ok(InvokeResult {
+                    success: false,
+                    tokens_used: 0,
+                    output: String::new(),
+                    timed_out: true,
+                })
+            }
+        }
+    } else {
+        let output = cmd.output().context("Failed to spawn claude")?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let tokens_used = extract_token_usage(&stdout);
+        Ok(InvokeResult {
+            success: output.status.success(),
+            tokens_used,
+            output: stdout,
+            timed_out: false,
+        })
+    }
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let tokens_used = extract_token_usage(&stdout);
-
-    Ok(InvokeResult {
-        success: output.status.success(),
-        tokens_used,
-        output: stdout,
-    })
+/// Read stdout from a spawned child process.
+fn read_child_stdout(child: &mut std::process::Child) -> String {
+    use std::io::Read;
+    let mut buf = String::new();
+    if let Some(ref mut stdout) = child.stdout {
+        let _ = stdout.read_to_string(&mut buf);
+    }
+    buf
 }
 
 struct InvokeResult {
     success: bool,
     tokens_used: u64,
     output: String,
+    timed_out: bool,
 }
 
 /// Extract token usage from claude JSON output.
@@ -131,14 +179,27 @@ fn run_hooks(agent_dir: &Path, hooks: &[String], secrets: &[(String, String)]) -
             "commit-memory" => {
                 let memory_dir = agent_dir.join("memory");
                 if memory_dir.exists() {
-                    let mut cmd = Command::new("git");
-                    cmd.args(["add", "memory/"])
-                        .current_dir(agent_dir);
-                    let _ = cmd.output();
-                    let mut cmd = Command::new("git");
-                    cmd.args(["commit", "-m", "aide: auto-commit memory"])
-                        .current_dir(agent_dir);
-                    let _ = cmd.output();
+                    let _ = Command::new("git")
+                        .args(["add", "memory/"])
+                        .current_dir(agent_dir)
+                        .output();
+                    let _ = Command::new("git")
+                        .args(["commit", "-m", "aide: auto-commit memory"])
+                        .current_dir(agent_dir)
+                        .output();
+                    // Push if remote is configured
+                    let has_remote = Command::new("git")
+                        .args(["remote", "get-url", "origin"])
+                        .current_dir(agent_dir)
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    if has_remote {
+                        let _ = Command::new("git")
+                            .args(["push"])
+                            .current_dir(agent_dir)
+                            .output();
+                    }
                 }
             }
             _ => {

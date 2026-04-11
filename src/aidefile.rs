@@ -24,6 +24,8 @@ pub struct Aidefile {
     pub trigger: Trigger,
     #[serde(default)]
     pub vault: Vault,
+    #[serde(default)]
+    pub output: Output,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -180,6 +182,40 @@ pub struct Vault {
     /// Required secret keys from vault.
     #[serde(default)]
     pub keys: Vec<String>,
+}
+
+/// Controls how sub-agent results are summarized back to the coordinator.
+///
+/// Load-bearing for aide-as-subagent mode: without enforced summary bounds,
+/// verbose sub-agent output pollutes the frontier session context.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Output {
+    /// Maximum tokens in the summary comment. Truncated if exceeded.
+    #[serde(default = "Output::default_max_summary_tokens")]
+    pub max_summary_tokens: u32,
+    /// Instructions to sub-agent about what narrative fields to include.
+    /// Sub-agent writes these inside a `<aide-summary>...</aide-summary>` block.
+    #[serde(default = "Output::default_narrative_schema")]
+    pub narrative_schema: String,
+}
+
+impl Output {
+    fn default_max_summary_tokens() -> u32 {
+        500
+    }
+
+    fn default_narrative_schema() -> String {
+        "NOTES: <one-line summary of what you did>\nPR: <url if created, else none>\nNEXT: <optional: redirect suggestion for coordinator>".into()
+    }
+}
+
+impl Default for Output {
+    fn default() -> Self {
+        Self {
+            max_summary_tokens: Self::default_max_summary_tokens(),
+            narrative_schema: Self::default_narrative_schema(),
+        }
+    }
 }
 
 /// Parse token strings: "100k" → 100_000, "1m" → 1_000_000, "500000" → 500_000.

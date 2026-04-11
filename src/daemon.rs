@@ -120,17 +120,17 @@ async fn check_github_issues(
         // Run the task
         match crate::runner::run(agent_dir, &task) {
             Ok(result) => {
-                // Comment result on issue and close
-                let comment = if result.success {
-                    format!("Task completed. Tokens used: {}", result.tokens_used)
-                } else {
-                    format!(
-                        "Task incomplete (budget exhausted). Tokens used: {}",
-                        result.tokens_used
-                    )
-                };
+                // Post the bounded summary (built by runner, capped per Aidefile [output])
                 let _ = std::process::Command::new("gh")
-                    .args(["issue", "comment", &number.to_string(), "--repo", &repo, "--body", &comment])
+                    .args([
+                        "issue",
+                        "comment",
+                        &number.to_string(),
+                        "--repo",
+                        &repo,
+                        "--body",
+                        &result.summary,
+                    ])
                     .output();
                 if result.success {
                     let _ = std::process::Command::new("gh")

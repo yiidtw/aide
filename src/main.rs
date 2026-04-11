@@ -1,6 +1,7 @@
 mod aidefile;
 mod budget;
 mod daemon;
+mod dispatch;
 mod mcp;
 mod registry;
 mod runner;
@@ -96,6 +97,36 @@ enum Commands {
         #[command(subcommand)]
         command: VaultCommands,
     },
+
+    /// Dispatch a task to an agent by creating a GitHub issue (frontier-driven)
+    Dispatch {
+        /// Agent name (must be registered)
+        agent: String,
+        /// Task description (first line becomes issue title)
+        task: String,
+        /// Print what would be dispatched without creating the issue
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Block until a dispatched issue is closed; print summary to stdout
+    Wait {
+        /// Issue reference: `owner/repo#N` or full GitHub URL
+        issue: String,
+        /// Max wait duration (e.g. "10m", "1h")
+        #[arg(long, default_value = "30m")]
+        timeout: String,
+        /// Poll interval (e.g. "5s", "30s")
+        #[arg(long, default_value = "5s")]
+        poll_interval: String,
+    },
+
+    /// Run one dispatched issue synchronously (internal, used by dispatch)
+    #[command(hide = true)]
+    RunIssue {
+        /// Issue reference: `owner/repo#N` or full GitHub URL
+        issue: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -141,6 +172,22 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::Dispatch { agent, task, dry_run } => {
+            dispatch::dispatch(&agent, &task, dry_run)?;
+        }
+        Commands::Wait {
+            issue,
+            timeout,
+            poll_interval,
+        } => {
+            let timeout_dur = aidefile::parse_duration(&timeout);
+            let poll_dur = aidefile::parse_duration(&poll_interval);
+            let code = dispatch::wait(&issue, timeout_dur, poll_dur)?;
+            std::process::exit(code);
+        }
+        Commands::RunIssue { issue } => {
+            dispatch::run_issue(&issue)?;
+        }
     }
 
     Ok(())
@@ -164,6 +211,8 @@ fn cmd_run(agent: &str, task: &str) -> Result<()> {
             result.tokens_used
         );
     }
+    println!("\n── summary ──");
+    println!("{}", result.summary);
     Ok(())
 }
 

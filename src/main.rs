@@ -2,6 +2,7 @@ mod aidefile;
 mod budget;
 mod daemon;
 mod dispatch;
+mod events;
 mod mcp;
 mod registry;
 mod runner;
@@ -127,6 +128,13 @@ enum Commands {
         /// Issue reference: `owner/repo#N` or full GitHub URL
         issue: String,
     },
+
+    /// Show recent orchestration events (dispatch timeline)
+    Events {
+        /// Max number of events to show
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +195,10 @@ async fn main() -> Result<()> {
         }
         Commands::RunIssue { issue } => {
             dispatch::run_issue(&issue)?;
+        }
+        Commands::Events { limit } => {
+            let evs = events::recent(limit)?;
+            events::print_timeline(&evs);
         }
     }
 

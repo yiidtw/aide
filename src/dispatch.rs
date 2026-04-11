@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::aidefile;
+use crate::events::{self, Event};
 use crate::registry;
 
 /// Resolve an agent name to (local_dir, github_repo_slug).
@@ -111,6 +112,15 @@ pub fn dispatch(agent: &str, task: &str, dry_run: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Could not parse issue number from {issue_url}"))?;
     let issue_ref = format!("{repo}#{number}");
 
+    events::log(&Event {
+        ts: events::now(),
+        kind: "dispatched".into(),
+        agent: agent.to_string(),
+        issue: issue_ref.clone(),
+        status: None,
+        tokens: None,
+    });
+
     // Spawn a detached background worker so dispatch returns immediately.
     // This decouples from `aide up` daemon and enables fan-out.
     spawn_background_worker(&issue_ref)?;
@@ -196,7 +206,30 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
         "Running dispatched issue"
     );
 
-    let result = crate::runner::run(&dir, &task)?;
+    let issue_key = format!("{repo}#{number}");
+    events::log(&Event {
+        ts: events::now(),
+        kind: "started".into(),
+        agent: agent_name.clone(),
+        issue: issue_key.clone(),
+        status: None,
+        tokens: None,
+    });
+
+    let result = match crate::runner::run(&dir, &task) {
+        Ok(r) => r,
+        Err(e) => {
+            events::log(&Event {
+                ts: events::now(),
+                kind: "failed".into(),
+                agent: agent_name.clone(),
+                issue: issue_key.clone(),
+                status: Some(format!("error: {e}")),
+                tokens: None,
+            });
+            return Err(e);
+        }
+    };
 
     // Post summary comment
     let _ = Command::new("gh")
@@ -218,7 +251,26 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
             .output();
     }
 
+    events::log(&Event {
+        ts: events::now(),
+        kind: "finished".into(),
+        agent: agent_name,
+        issue: issue_key,
+        status: Some(extract_status(&result.summary)),
+        tokens: Some(result.tokens_used),
+    });
+
     Ok(())
+}
+
+/// Pull `STATUS:` line from a summary.
+fn extract_status(summary: &str) -> String {
+    for line in summary.lines() {
+        if let Some(rest) = line.trim().strip_prefix("STATUS:") {
+            return rest.trim().to_string();
+        }
+    }
+    "unknown".into()
 }
 
 /// `aide wait <issue-url>` — block until issue closes, print final summary, exit.

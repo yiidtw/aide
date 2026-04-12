@@ -1,6 +1,8 @@
 mod aidefile;
+mod api;
 mod budget;
 mod daemon;
+mod db;
 mod dispatch;
 mod events;
 mod mcp;
@@ -135,6 +137,25 @@ enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+
+    /// Start the local HTTP API server
+    Api {
+        /// Port to listen on
+        #[arg(long, default_value_t = 7979)]
+        port: u16,
+    },
+
+    /// Show today's stats (runs, tokens, agents)
+    Stats,
+
+    /// Show daemon health and last heartbeat
+    Status,
+
+    /// Install aide as a system service (macOS launchd / Linux systemd)
+    InstallService,
+
+    /// Uninstall aide system service
+    UninstallService,
 }
 
 #[derive(Subcommand)]
@@ -200,6 +221,13 @@ async fn main() -> Result<()> {
             let evs = events::recent(limit)?;
             events::print_timeline(&evs);
         }
+        Commands::Api { port } => {
+            api::serve(port).await?;
+        }
+        Commands::Stats => cmd_stats()?,
+        Commands::Status => cmd_status()?,
+        Commands::InstallService => cmd_install_service()?,
+        Commands::UninstallService => cmd_uninstall_service()?,
     }
 
     Ok(())
@@ -471,4 +499,213 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
         }
     }
     Ok(())
+}
+
+fn cmd_stats() -> Result<()> {
+    let stats = db::stats_today()?;
+    println!("Date: {}", stats.date);
+    println!("Runs: {} ({} success, {} failed)", stats.total_runs, stats.successful, stats.failed);
+    println!("Tokens: {}k", stats.total_tokens / 1000);
+    println!(
+        "Agents: {}",
+        if stats.agents_used.is_empty() {
+            "(none)".into()
+        } else {
+            stats.agents_used.join(", ")
+        }
+    );
+    Ok(())
+}
+
+fn cmd_status() -> Result<()> {
+    match db::last_heartbeat()? {
+        Some(hb) => {
+            let age = if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&hb.ts) {
+                let secs = (chrono::Utc::now() - ts.with_timezone(&chrono::Utc)).num_seconds();
+                if secs < 60 {
+                    format!("{secs}s ago")
+                } else {
+                    format!("{}m ago", secs / 60)
+                }
+            } else {
+                "?".into()
+            };
+            let alive = if age.contains("ago") {
+                let secs_val: i64 = age.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("999").parse().unwrap_or(999);
+                if age.contains('m') { secs_val < 3 } else { secs_val < 120 }
+            } else {
+                false
+            };
+            println!(
+                "daemon: {} (PID {}, heartbeat {})",
+                if alive { "running" } else { "stale" },
+                hb.daemon_pid,
+                age,
+            );
+            println!("agents: {}", hb.agents_count);
+            println!("uptime: {}m", hb.uptime_secs / 60);
+        }
+        None => {
+            println!("daemon: not running (no heartbeat found)");
+        }
+    }
+
+    // Also show quick stats
+    let stats = db::stats_today()?;
+    if stats.total_runs > 0 {
+        println!(
+            "today: {} runs, {}k tokens",
+            stats.total_runs,
+            stats.total_tokens / 1000
+        );
+    }
+    Ok(())
+}
+
+fn cmd_install_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let plist_dir = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("No home dir"))?
+            .join("Library/LaunchAgents");
+        std::fs::create_dir_all(&plist_dir)?;
+
+        let exe = std::env::current_exe()?;
+        let plist_path = plist_dir.join("sh.aide.daemon.plist");
+
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>sh.aide.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>up</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{home}/.aide/logs/daemon-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{home}/.aide/logs/daemon-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:{home}/.local/bin</string>
+    </dict>
+</dict>
+</plist>"#,
+            exe = exe.display(),
+            home = dirs::home_dir().unwrap().display(),
+        );
+
+        // Ensure logs dir exists
+        let log_dir = registry::aide_dir().join("logs");
+        std::fs::create_dir_all(&log_dir)?;
+
+        std::fs::write(&plist_path, plist)?;
+
+        // Load the service
+        let status = std::process::Command::new("launchctl")
+            .args(["load", "-w"])
+            .arg(&plist_path)
+            .status()?;
+
+        if status.success() {
+            println!("✓ Installed and loaded sh.aide.daemon");
+            println!("  plist: {}", plist_path.display());
+            println!("  The daemon will start on login and restart if it crashes.");
+            println!("  Use `aide uninstall-service` to remove.");
+        } else {
+            println!("⚠ Plist written but launchctl load failed. Try manually:");
+            println!("  launchctl load -w {}", plist_path.display());
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let systemd_dir = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("No home dir"))?
+            .join(".config/systemd/user");
+        std::fs::create_dir_all(&systemd_dir)?;
+
+        let exe = std::env::current_exe()?;
+        let unit_path = systemd_dir.join("aide.service");
+
+        let unit = format!(
+            "[Unit]\nDescription=aide daemon\n\n[Service]\nExecStart={exe} up\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
+            exe = exe.display(),
+        );
+
+        std::fs::write(&unit_path, unit)?;
+
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "aide"])
+            .status()?;
+
+        if status.success() {
+            println!("✓ Installed and started aide.service");
+        } else {
+            println!("⚠ Unit written but systemctl failed.");
+        }
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        anyhow::bail!("install-service is only supported on macOS and Linux");
+    }
+}
+
+fn cmd_uninstall_service() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let plist_path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("No home dir"))?
+            .join("Library/LaunchAgents/sh.aide.daemon.plist");
+
+        if plist_path.exists() {
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload", "-w"])
+                .arg(&plist_path)
+                .status();
+            std::fs::remove_file(&plist_path)?;
+            println!("✓ Unloaded and removed sh.aide.daemon");
+        } else {
+            println!("No service installed (plist not found)");
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "aide"])
+            .status();
+        let unit_path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("No home dir"))?
+            .join(".config/systemd/user/aide.service");
+        if unit_path.exists() {
+            std::fs::remove_file(&unit_path)?;
+        }
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+        println!("✓ Removed aide.service");
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        anyhow::bail!("uninstall-service is only supported on macOS and Linux");
+    }
 }

@@ -207,6 +207,9 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
     );
 
     let issue_key = format!("{repo}#{number}");
+    let task_preview = task.chars().take(200).collect::<String>();
+
+    // Write to both JSONL (backward compat) and SQLite
     events::log(&Event {
         ts: events::now(),
         kind: "started".into(),
@@ -215,6 +218,7 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
         status: None,
         tokens: None,
     });
+    let run_id = crate::db::insert_run(&agent_name, &issue_key, &task_preview).ok();
 
     let result = match crate::runner::run(&dir, &task) {
         Ok(r) => r,
@@ -227,6 +231,9 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
                 status: Some(format!("error: {e}")),
                 tokens: None,
             });
+            if let Some(rid) = run_id {
+                let _ = crate::db::finish_run(rid, false, &format!("error: {e}"), 0, 0, "");
+            }
             return Err(e);
         }
     };
@@ -251,14 +258,25 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
             .output();
     }
 
+    let status_str = extract_status(&result.summary);
     events::log(&Event {
         ts: events::now(),
         kind: "finished".into(),
         agent: agent_name,
         issue: issue_key,
-        status: Some(extract_status(&result.summary)),
+        status: Some(status_str.clone()),
         tokens: Some(result.tokens_used),
     });
+    if let Some(rid) = run_id {
+        let _ = crate::db::finish_run(
+            rid,
+            result.success,
+            &status_str,
+            result.tokens_used,
+            0,
+            &result.summary,
+        );
+    }
 
     Ok(())
 }

@@ -52,3 +52,26 @@ If `[memory].compact_after` is set:
 1. Estimate total tokens in `memory/` (file bytes / 4)
 2. If over threshold, run `claude -p` with a compaction prompt
 3. This compaction invocation also counts against the budget
+
+## Dispatch flow (aide-as-subagent)
+
+When an agent needs to delegate work to another agent, the dispatch flow provides token isolation:
+
+```
+aide dispatch → gh issue create → spawn aide run-issue →
+  runner::run (budgeted claude -p) → build_summary →
+  gh issue comment (bounded summary) → gh issue close →
+  aide wait picks up summary → returns to frontier
+```
+
+### Why token isolation matters
+
+Without dispatch, a sub-task runs inside the calling agent's context window. A 50k-token sub-task expands the frontier, consuming budget and degrading the caller's reasoning quality. With dispatch, the sub-agent runs in its own `claude -p` invocation with an independent token budget. Only the bounded summary (controlled by `[output].max_summary_tokens` in the Aidefile) flows back to the caller.
+
+### How it works
+
+1. **`aide dispatch <agent> "<task>"`** creates a GitHub issue labeled for the target agent, then spawns a detached `aide run-issue` worker. The caller gets back an issue URL immediately.
+2. **`aide run-issue`** picks up the issue, runs the agent's task loop (same as `aide run`), builds a summary conforming to the `[output].narrative_schema`, posts it as a closing comment, and closes the issue.
+3. **`aide wait <issue-url>`** polls the issue until it closes, then extracts the bounded summary from the final comment and returns it to the calling agent's context.
+
+This three-step handshake keeps each agent's context window independent while allowing structured results to flow back through the GitHub Issues transport.

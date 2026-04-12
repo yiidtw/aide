@@ -28,6 +28,17 @@ on = "issue"
 
 [vault]
 keys = ["GITHUB_TOKEN", "SLACK_WEBHOOK"]
+
+[output]
+max_summary_tokens = 500
+narrative_schema = """
+NOTES: <one-line what you changed>
+PR: <url or none>
+NEXT: <optional redirect>
+"""
+
+[workspace]
+read = ["~/claude_projects/crossmem-bridge", "~/claude_projects/crossmem-chrome"]
 ```
 
 ## Sections
@@ -82,6 +93,38 @@ Custom hooks are shell commands run in the agent's directory.
 | Field | Type | Description |
 |-------|------|-------------|
 | `keys` | list of strings | Secret names to decrypt and inject as env vars |
+
+### `[output]`
+
+```toml
+[output]
+max_summary_tokens = 500
+narrative_schema = """
+NOTES: <one-line what you changed>
+PR: <url or none>
+NEXT: <optional redirect>
+"""
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_summary_tokens` | u32 | 500 | Max tokens in the bounded summary |
+| `narrative_schema` | string | (default NOTES/PR/NEXT) | Template the sub-agent fills in inside `<aide-summary>` block |
+
+This section is load-bearing for aide-as-subagent mode. Without it, sub-agent output pollutes the frontier context. The runner wraps the task with instructions requiring the sub-agent to emit an `<aide-summary>` block conforming to the `narrative_schema`. The bounded summary is what `aide wait` returns to the calling agent, keeping the frontier context clean.
+
+### `[workspace]`
+
+```toml
+[workspace]
+read = ["~/claude_projects/crossmem-bridge", "~/claude_projects/crossmem-chrome"]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `read` | list of strings | [] | Sibling directories the sub-agent can read |
+
+The `read` list is translated to `.claude/settings.json` permission grants and a WORKSPACE section in the task prompt. This solves sandbox restrictions in non-interactive `claude -p` mode, where the sub-agent would otherwise be unable to access files outside its own project directory.
 
 ## Token shorthand
 

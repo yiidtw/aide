@@ -30,6 +30,7 @@
 - [aide import / export](./commands/import-export.md)
 - [aide vault](./commands/vault.md)
 - [aide mcp](./commands/mcp.md)
+- [aide dispatch / wait / events](./commands/dispatch.md)
 
 # Architecture
 

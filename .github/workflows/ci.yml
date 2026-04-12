@@ -22,4 +22,4 @@ jobs:
         run: |
           cargo build --release
           ./target/release/aide --version
-          ./target/release/aide --help | grep "Docker for AI agents"
+          ./target/release/aide --help | grep "One file to agentize"

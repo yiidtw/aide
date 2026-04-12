@@ -34,12 +34,15 @@ pub fn run(agent_dir: &Path, task: &str) -> Result<RunResult> {
     let secrets = resolve_vault(&af)?;
     run_hooks(agent_dir, &af.hooks.on_spawn, &secrets)?;
 
+    // Ensure Claude Code permissions allow reading declared workspace dirs.
+    ensure_workspace_permissions(agent_dir, &af.workspace)?;
+
     // Snapshot git state so we can report changed files in the summary.
     let git_head_before = git_head(agent_dir);
 
     // Wrap the user's task with summary instructions so sub-agent emits
     // a parseable <aide-summary> block. This is load-bearing for token isolation.
-    let wrapped_task = wrap_task_with_summary_instructions(task, &af.output);
+    let wrapped_task = wrap_task_with_summary_instructions_and_workspace(task, &af.output, &af.workspace);
 
     let mut tracker = BudgetTracker::new(af.budget.tokens_limit(), af.budget.max_retries);
     let mut last_output = String::new();
@@ -107,13 +110,28 @@ pub fn run(agent_dir: &Path, task: &str) -> Result<RunResult> {
 }
 
 /// Wrap the user-provided task with instructions requiring a summary block.
-fn wrap_task_with_summary_instructions(
+fn wrap_task_with_summary_instructions_and_workspace(
     task: &str,
     output_cfg: &crate::aidefile::Output,
+    workspace: &crate::aidefile::Workspace,
 ) -> String {
-    format!(
-        r#"{task}
+    let workspace_section = if workspace.read.is_empty() {
+        String::new()
+    } else {
+        let paths = workspace
+            .resolved_read_paths()
+            .iter()
+            .map(|p| format!("  - {p}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "\n---\nWORKSPACE — you have READ access to these sibling directories:\n{paths}\n\
+             Use Read/Grep/Glob freely on these paths. They are pre-authorized.\n"
+        )
+    };
 
+    format!(
+        r#"{task}{workspace_section}
 ---
 IMPORTANT — required summary block
 
@@ -132,6 +150,7 @@ Rules:
 If you cannot complete the task, still emit the block with STATUS set appropriately and NOTES describing what blocked you.
 "#,
         task = task,
+        workspace_section = workspace_section,
         schema = output_cfg.narrative_schema,
         max_tokens = output_cfg.max_summary_tokens,
         max_chars = output_cfg.max_summary_tokens as usize * 4,
@@ -389,6 +408,57 @@ fn run_hooks(agent_dir: &Path, hooks: &[String], secrets: &[(String, String)]) -
     Ok(())
 }
 
+/// Write/merge `.claude/settings.json` to auto-allow Read/Grep/Glob when
+/// the Aidefile declares `[workspace] read` paths. This prevents Claude Code
+/// from blocking file reads in non-interactive (`-p`) mode.
+fn ensure_workspace_permissions(
+    agent_dir: &Path,
+    workspace: &crate::aidefile::Workspace,
+) -> Result<()> {
+    if workspace.read.is_empty() {
+        return Ok(());
+    }
+
+    let claude_dir = agent_dir.join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+    let settings_path = claude_dir.join("settings.json");
+
+    // Read existing settings or start fresh.
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure permissions.allow contains Read, Grep, Glob for cross-dir access.
+    let perms = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    let allow = perms
+        .as_object_mut()
+        .unwrap()
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]));
+
+    let allow_arr = allow.as_array_mut().unwrap();
+    for tool in ["Read", "Grep", "Glob"] {
+        let tool_val = serde_json::Value::String(tool.to_string());
+        if !allow_arr.contains(&tool_val) {
+            allow_arr.push(tool_val);
+        }
+    }
+
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    tracing::debug!(
+        "Wrote workspace permissions to {}",
+        settings_path.display()
+    );
+    Ok(())
+}
+
 /// Check if memory needs compaction.
 fn check_memory_compact(agent_dir: &Path, af: &Aidefile) -> Result<()> {
     let memory_dir = agent_dir.join("memory");
@@ -481,12 +551,25 @@ mod tests {
     #[test]
     fn wrap_task_contains_schema_and_limits() {
         let cfg = Output::default();
-        let wrapped = wrap_task_with_summary_instructions("do thing", &cfg);
+        let ws = crate::aidefile::Workspace::default();
+        let wrapped = wrap_task_with_summary_instructions_and_workspace("do thing", &cfg, &ws);
         assert!(wrapped.contains("do thing"));
         assert!(wrapped.contains("<aide-summary>"));
         assert!(wrapped.contains("</aide-summary>"));
         assert!(wrapped.contains("NOTES:"));
         assert!(wrapped.contains("500 tokens"));
+    }
+
+    #[test]
+    fn wrap_task_includes_workspace_paths() {
+        let cfg = Output::default();
+        let ws = crate::aidefile::Workspace {
+            read: vec!["~/claude_projects/sibling-repo".into()],
+        };
+        let wrapped = wrap_task_with_summary_instructions_and_workspace("do thing", &cfg, &ws);
+        assert!(wrapped.contains("WORKSPACE"));
+        assert!(wrapped.contains("sibling-repo"));
+        assert!(wrapped.contains("pre-authorized"));
     }
 }
 

@@ -26,6 +26,8 @@ pub struct Aidefile {
     pub vault: Vault,
     #[serde(default)]
     pub output: Output,
+    #[serde(default)]
+    pub workspace: Workspace,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -215,6 +217,27 @@ impl Default for Output {
             max_summary_tokens: Self::default_max_summary_tokens(),
             narrative_schema: Self::default_narrative_schema(),
         }
+    }
+}
+
+/// Cross-repo read access declarations.
+///
+/// Translates to Claude Code permission grants and prompt-level context
+/// so sub-agents can read sibling directories without interactive prompts.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Workspace {
+    /// Directories the sub-agent is allowed to read (expanded with shellexpand).
+    #[serde(default)]
+    pub read: Vec<String>,
+}
+
+impl Workspace {
+    /// Expand ~ and return resolved absolute paths.
+    pub fn resolved_read_paths(&self) -> Vec<String> {
+        self.read
+            .iter()
+            .map(|p| shellexpand::tilde(p).to_string())
+            .collect()
     }
 }
 

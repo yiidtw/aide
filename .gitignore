@@ -12,3 +12,5 @@ aide.toml
 constitution.private/
 AGENTS.md
 .playwright-mcp/
+.vercel/
+.wrangler/

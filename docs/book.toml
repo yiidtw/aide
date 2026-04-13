@@ -12,3 +12,4 @@ git-repository-url = "https://github.com/yiidtw/aide"
 edit-url-template = "https://github.com/yiidtw/aide/edit/main/docs/{path}"
 site-url = "/"
 preferred-dark-theme = "navy"
+additional-js = ["src/tip-loader.js"]

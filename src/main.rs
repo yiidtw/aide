@@ -5,6 +5,7 @@ mod daemon;
 mod dashboard;
 mod db;
 mod dispatch;
+mod emit;
 mod events;
 mod mcp;
 mod registry;
@@ -132,6 +133,12 @@ enum Commands {
         issue: String,
     },
 
+    /// Cancel a running dispatched issue (kill worker, close issue)
+    Cancel {
+        /// Issue reference: `owner/repo#N` or full GitHub URL
+        issue: String,
+    },
+
     /// Show recent orchestration events (dispatch timeline)
     Events {
         /// Max number of events to show
@@ -148,6 +155,13 @@ enum Commands {
 
     /// Show today's stats (runs, tokens, agents)
     Stats,
+
+    /// Generate .claude/agents/*.md wrappers for all registered agents
+    EmitClaudeAgents {
+        /// Output directory (default: .claude/agents)
+        #[arg(short, long, default_value = ".claude/agents")]
+        output: String,
+    },
 
     /// Show daemon health and last heartbeat
     Status,
@@ -215,11 +229,14 @@ async fn main() -> Result<()> {
         } => {
             let timeout_dur = aidefile::parse_duration(&timeout);
             let poll_dur = aidefile::parse_duration(&poll_interval);
-            let code = dispatch::wait(&issue, timeout_dur, poll_dur)?;
+            let code = dispatch::wait(&issue, timeout_dur, poll_dur, None)?;
             std::process::exit(code);
         }
         Commands::RunIssue { issue } => {
             dispatch::run_issue(&issue)?;
+        }
+        Commands::Cancel { issue } => {
+            dispatch::cancel(&issue)?;
         }
         Commands::Events { limit } => {
             let evs = events::recent(limit)?;
@@ -227,6 +244,9 @@ async fn main() -> Result<()> {
         }
         Commands::Api { port } => {
             api::serve(port).await?;
+        }
+        Commands::EmitClaudeAgents { output } => {
+            emit::emit_claude_agents(&output)?;
         }
         Commands::Stats => cmd_stats()?,
         Commands::Status => cmd_status()?,
@@ -519,6 +539,21 @@ fn cmd_stats() -> Result<()> {
             stats.agents_used.join(", ")
         }
     );
+
+    // Dispatch telemetry summary
+    if let Ok(t) = db::telemetry_summary() {
+        if t.total_runs > 0 {
+            println!();
+            println!("── dispatch telemetry ──");
+            println!("Measured runs: {}", t.total_runs);
+            println!("Avg compression ratio: {:.4} (summary chars / sub-agent tokens)", t.avg_compression_ratio);
+            println!("Sub-agent tokens: {}k", t.total_sub_agent_tokens / 1000);
+            println!("Frontier wait tokens: {}k", t.total_frontier_wait_tokens / 1000);
+            println!("Tokens saved: {}k", t.tokens_saved / 1000);
+            println!("Savings multiplier: {:.1}x", t.savings_multiplier);
+        }
+    }
+
     Ok(())
 }
 

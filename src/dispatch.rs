@@ -218,7 +218,8 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
         status: None,
         tokens: None,
     });
-    let run_id = crate::db::insert_run(&agent_name, &issue_key, &task_preview).ok();
+    let my_pid = std::process::id();
+    let run_id = crate::db::insert_run(&agent_name, &issue_key, &task_preview, Some(my_pid)).ok();
 
     let result = match crate::runner::run(&dir, &task) {
         Ok(r) => r,
@@ -276,6 +277,14 @@ pub fn run_issue(issue_ref: &str) -> Result<()> {
             0,
             &result.summary,
         );
+
+        // Populate dispatch telemetry
+        let compression_ratio = if result.tokens_used > 0 {
+            result.summary.len() as f64 / result.tokens_used as f64
+        } else {
+            0.0
+        };
+        let _ = crate::db::insert_telemetry(rid, result.tokens_used, compression_ratio);
     }
 
     Ok(())
@@ -298,7 +307,7 @@ fn extract_status(summary: &str) -> String {
 /// - 1: partial / failed
 /// - 2: cancelled
 /// - 124: timeout
-pub fn wait(issue_ref: &str, timeout: Duration, poll_interval: Duration) -> Result<i32> {
+pub fn wait(issue_ref: &str, timeout: Duration, poll_interval: Duration, task: Option<&str>) -> Result<i32> {
     let (repo, number) = parse_issue_ref(issue_ref)?;
     let started = Instant::now();
 
@@ -332,6 +341,14 @@ pub fn wait(issue_ref: &str, timeout: Duration, poll_interval: Duration) -> Resu
                 .and_then(|c| c["body"].as_str())
                 .unwrap_or("(no comment)")
                 .to_string();
+
+            // Record frontier-side telemetry estimates
+            let issue_key = format!("{repo}#{number}");
+            if let Ok(Some(run_id)) = crate::db::find_run_id_by_issue(&issue_key) {
+                let dispatch_tokens = task.map(|t| t.len() as u64 / 4).unwrap_or(0);
+                let wait_tokens = last_comment.len() as u64 / 4;
+                let _ = crate::db::update_frontier_telemetry(run_id, dispatch_tokens, wait_tokens);
+            }
 
             // The only thing that enters the frontier session context
             println!("{last_comment}");
@@ -385,6 +402,45 @@ fn exit_code_from_summary(summary: &str) -> i32 {
         }
     }
     1
+}
+
+/// `aide cancel <issue-ref>` — kill the background worker and close the issue.
+pub fn cancel(issue_ref: &str) -> Result<()> {
+    let (repo, number) = parse_issue_ref(issue_ref)?;
+    let issue_key = format!("{repo}#{number}");
+
+    let run = crate::db::get_run_by_issue(&issue_key)?;
+
+    if let Some(ref row) = run {
+        if let Some(pid) = row.worker_pid {
+            tracing::info!(pid = pid, "Sending SIGTERM to worker");
+            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+        }
+    }
+
+    let _ = Command::new("gh")
+        .args(["issue", "comment", &number.to_string(), "--repo", &repo, "--body", "STATUS: cancelled (by user)"])
+        .output();
+    let _ = Command::new("gh")
+        .args(["issue", "close", &number.to_string(), "--repo", &repo])
+        .output();
+
+    if let Some(ref row) = run {
+        let _ = crate::db::mark_cancelled(row.id);
+    }
+
+    let agent = run.as_ref().map(|r| r.agent.clone()).unwrap_or_else(|| "unknown".into());
+    events::log(&Event {
+        ts: events::now(),
+        kind: "cancelled".into(),
+        agent,
+        issue: issue_key.clone(),
+        status: Some("cancelled".into()),
+        tokens: None,
+    });
+
+    println!("cancelled: {issue_key}");
+    Ok(())
 }
 
 #[cfg(test)]

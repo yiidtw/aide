@@ -16,7 +16,8 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/agents", get(get_agents))
         .route("/api/heartbeat", get(get_heartbeat))
         .route("/api/stats", get(get_stats))
-        .route("/api/health", get(get_health));
+        .route("/api/health", get(get_health))
+        .route("/api/telemetry", get(get_telemetry));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     tracing::info!("aide API listening on http://{addr}");
@@ -108,4 +109,16 @@ struct HealthResponse {
     version: String,
     daemon_alive: bool,
     last_heartbeat: Option<db::Heartbeat>,
+}
+
+async fn get_telemetry() -> Json<db::TelemetrySummary> {
+    Json(db::telemetry_summary().unwrap_or(db::TelemetrySummary {
+        total_runs: 0,
+        avg_compression_ratio: 0.0,
+        total_sub_agent_tokens: 0,
+        total_frontier_wait_tokens: 0,
+        total_frontier_dispatch_tokens: 0,
+        tokens_saved: 0,
+        savings_multiplier: 0.0,
+    }))
 }

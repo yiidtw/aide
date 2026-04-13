@@ -44,7 +44,8 @@ fn migrate(c: &Connection) -> Result<()> {
             status      TEXT,
             tokens_used INTEGER DEFAULT 0,
             retries     INTEGER DEFAULT 0,
-            summary     TEXT
+            summary     TEXT,
+            worker_pid  INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent);
         CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);
@@ -69,19 +70,60 @@ fn migrate(c: &Connection) -> Result<()> {
         ",
     )
     .context("Schema migration failed")?;
+
+    // Incremental migrations for existing DBs
+    let _ = c.execute("ALTER TABLE runs ADD COLUMN worker_pid INTEGER", []);
+
     Ok(())
 }
 
 // ── Run records ──
 
 /// Insert a new run record when a dispatch starts. Returns the row id.
-pub fn insert_run(agent: &str, issue: &str, task_preview: &str) -> Result<i64> {
+pub fn insert_run(agent: &str, issue: &str, task_preview: &str, worker_pid: Option<u32>) -> Result<i64> {
     let c = conn().lock().unwrap();
     c.execute(
-        "INSERT INTO runs (agent, issue, task_preview, started_at) VALUES (?1, ?2, ?3, ?4)",
-        params![agent, issue, task_preview, crate::events::now()],
+        "INSERT INTO runs (agent, issue, task_preview, started_at, worker_pid) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![agent, issue, task_preview, crate::events::now(), worker_pid.map(|p| p as i64)],
     )?;
     Ok(c.last_insert_rowid())
+}
+
+/// Look up a run by issue reference (e.g. "owner/repo#123").
+pub fn get_run_by_issue(issue: &str) -> Result<Option<RunRow>> {
+    let c = conn().lock().unwrap();
+    let mut stmt = c.prepare(
+        "SELECT id, agent, issue, trigger, task_preview, started_at, finished_at, success, status, tokens_used, retries, summary, worker_pid
+         FROM runs WHERE issue = ?1 ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![issue], |row| {
+        Ok(RunRow {
+            id: row.get(0)?,
+            agent: row.get(1)?,
+            issue: row.get(2)?,
+            trigger: row.get(3)?,
+            task_preview: row.get(4)?,
+            started_at: row.get(5)?,
+            finished_at: row.get(6)?,
+            success: row.get(7)?,
+            status: row.get(8)?,
+            tokens_used: row.get(9)?,
+            retries: row.get(10)?,
+            summary: row.get(11)?,
+            worker_pid: row.get(12)?,
+        })
+    })?;
+    Ok(rows.next().transpose()?)
+}
+
+/// Mark a run as cancelled.
+pub fn mark_cancelled(run_id: i64) -> Result<()> {
+    let c = conn().lock().unwrap();
+    c.execute(
+        "UPDATE runs SET finished_at = ?1, success = 0, status = 'cancelled' WHERE id = ?2",
+        params![crate::events::now(), run_id],
+    )?;
+    Ok(())
 }
 
 /// Update a run record when it finishes.
@@ -113,7 +155,7 @@ pub fn finish_run(
 pub fn recent_runs(limit: usize) -> Result<Vec<RunRow>> {
     let c = conn().lock().unwrap();
     let mut stmt = c.prepare(
-        "SELECT id, agent, issue, trigger, task_preview, started_at, finished_at, success, status, tokens_used, retries, summary
+        "SELECT id, agent, issue, trigger, task_preview, started_at, finished_at, success, status, tokens_used, retries, summary, worker_pid
          FROM runs ORDER BY id DESC LIMIT ?1",
     )?;
     let rows = stmt
@@ -131,6 +173,7 @@ pub fn recent_runs(limit: usize) -> Result<Vec<RunRow>> {
                 tokens_used: row.get(9)?,
                 retries: row.get(10)?,
                 summary: row.get(11)?,
+                worker_pid: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -151,6 +194,7 @@ pub struct RunRow {
     pub tokens_used: i64,
     pub retries: i32,
     pub summary: Option<String>,
+    pub worker_pid: Option<i64>,
 }
 
 // ── Heartbeats ──
@@ -195,6 +239,83 @@ pub fn last_heartbeat() -> Result<Option<Heartbeat>> {
             uptime_secs: row.get(3)?,
         })
     })?;
+    Ok(rows.next().transpose()?)
+}
+
+// ── Dispatch telemetry ──
+
+/// Insert sub-agent side telemetry after a run completes.
+pub fn insert_telemetry(run_id: i64, sub_agent_tokens: u64, compression_ratio: f64) -> Result<()> {
+    let c = conn().lock().unwrap();
+    c.execute(
+        "INSERT INTO dispatch_telemetry (run_id, sub_agent_tokens, compression_ratio) VALUES (?1, ?2, ?3)",
+        params![run_id, sub_agent_tokens as i64, compression_ratio],
+    )?;
+    Ok(())
+}
+
+/// Update frontier-side token estimates after wait() completes.
+pub fn update_frontier_telemetry(run_id: i64, dispatch_tokens: u64, wait_tokens: u64) -> Result<()> {
+    let c = conn().lock().unwrap();
+    let updated = c.execute(
+        "UPDATE dispatch_telemetry SET frontier_dispatch_tokens = ?1, frontier_wait_tokens = ?2 WHERE run_id = ?3",
+        params![dispatch_tokens as i64, wait_tokens as i64, run_id],
+    )?;
+    if updated == 0 {
+        c.execute(
+            "INSERT INTO dispatch_telemetry (run_id, frontier_dispatch_tokens, frontier_wait_tokens) VALUES (?1, ?2, ?3)",
+            params![run_id, dispatch_tokens as i64, wait_tokens as i64],
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TelemetrySummary {
+    pub total_runs: i64,
+    pub avg_compression_ratio: f64,
+    pub total_sub_agent_tokens: i64,
+    pub total_frontier_wait_tokens: i64,
+    pub total_frontier_dispatch_tokens: i64,
+    pub tokens_saved: i64,
+    pub savings_multiplier: f64,
+}
+
+pub fn telemetry_summary() -> Result<TelemetrySummary> {
+    let c = conn().lock().unwrap();
+    let total_runs: i64 = c.query_row(
+        "SELECT COUNT(*) FROM dispatch_telemetry WHERE sub_agent_tokens > 0 OR frontier_wait_tokens > 0",
+        [], |r| r.get(0),
+    )?;
+    let avg_compression_ratio: f64 = c.query_row(
+        "SELECT COALESCE(AVG(compression_ratio), 0.0) FROM dispatch_telemetry WHERE compression_ratio IS NOT NULL AND compression_ratio > 0",
+        [], |r| r.get(0),
+    )?;
+    let total_sub_agent_tokens: i64 = c.query_row(
+        "SELECT COALESCE(SUM(sub_agent_tokens), 0) FROM dispatch_telemetry", [], |r| r.get(0),
+    )?;
+    let total_frontier_wait_tokens: i64 = c.query_row(
+        "SELECT COALESCE(SUM(frontier_wait_tokens), 0) FROM dispatch_telemetry", [], |r| r.get(0),
+    )?;
+    let total_frontier_dispatch_tokens: i64 = c.query_row(
+        "SELECT COALESCE(SUM(frontier_dispatch_tokens), 0) FROM dispatch_telemetry", [], |r| r.get(0),
+    )?;
+    let tokens_saved = total_sub_agent_tokens - total_frontier_wait_tokens;
+    let savings_multiplier = if total_frontier_wait_tokens > 0 {
+        total_sub_agent_tokens as f64 / total_frontier_wait_tokens as f64
+    } else { 0.0 };
+    Ok(TelemetrySummary {
+        total_runs, avg_compression_ratio, total_sub_agent_tokens,
+        total_frontier_wait_tokens, total_frontier_dispatch_tokens,
+        tokens_saved, savings_multiplier,
+    })
+}
+
+/// Look up run_id by issue reference.
+pub fn find_run_id_by_issue(issue: &str) -> Result<Option<i64>> {
+    let c = conn().lock().unwrap();
+    let mut stmt = c.prepare("SELECT id FROM runs WHERE issue = ?1 ORDER BY id DESC LIMIT 1")?;
+    let mut rows = stmt.query_map(params![issue], |r| r.get(0))?;
     Ok(rows.next().transpose()?)
 }
 

@@ -1,15 +1,14 @@
 # aide.sh
 
-**One file to agentize your Claude project.**
+**Your commander of agents.**
 
-aide is a lifecycle manager for Claude Code agents. Drop an `Aidefile` into any Claude Code project — it becomes an agent with a persona, budget, vault, hooks, and triggers.
+aide turns any Claude Code project into an agent with one file. Multiple agents? One HQ to command them all.
 
 ## Why aide?
 
-- **Minimal** — one Rust binary, one config file. No runtime, no containers, no framework.
-- **Claude Code native** — `aide run` calls `claude -p` under the hood. All intelligence is in Claude Code.
-- **Fire and forget** — set a token budget, define triggers, and walk away. aide handles the rest.
-- **Secure** — age-encrypted vault secrets injected as env vars at spawn time. Never enters the LLM context window.
+**The token problem:** A frontier Claude Code session has a finite context window. Every subtask handled inline eats tokens. With 5 agents doing 50k tokens each, you burn 250k of context — most of it irrelevant to the next task.
+
+**aide's answer:** Process isolation. `aide dispatch` runs work in separate `claude -p` processes. The frontier only sees a bounded summary. 50k tokens of work → ~500 tokens of output.
 
 ## Quick taste
 
@@ -17,27 +16,26 @@ aide is a lifecycle manager for Claude Code agents. Drop an `Aidefile` into any 
 # Install
 cargo install aide-sh
 
-# Turn any Claude project into an agent
+# Turn any project into an agent
 cd ~/projects/code-reviewer
-aide init --persona "Senior Reviewer"
+aide init
 # ✓ Created Aidefile
 
-# One-shot: fire and forget
+# Run a task
 aide run . "Review PR #42 and leave comments"
-# ▸ Running task in ~/projects/code-reviewer
-#   agent: Senior Reviewer
-#   budget: 200000 tokens
 # ✓ Task completed (23,847 tokens used)
 
-# Or register and run by name
-aide register . --name reviewer
-aide run reviewer "Review all open PRs"
+# Team mode: coordinate multiple agents
+aide init --team
+# ✓ Created crossmem-hq/
 
-# Start daemon: agents wake up on triggers
-aide up
+aide dispatch crossmem-rs "fix parser bug"
+aide dispatch crossmem-web "update dashboard"
+aide wait crossmem-rs#42
+# ✓ Done (18,293 tokens)
 ```
 
-## What is an Aidefile?
+## What's an Aidefile?
 
 ```toml
 [persona]
@@ -48,40 +46,47 @@ style = "direct, cares about edge cases"
 tokens = "100k"
 max_retries = 3
 
-[hooks]
-on_spawn = ["inject-vault"]
-on_complete = ["commit-memory"]
-
 [trigger]
 on = "issue"
 
 [vault]
 keys = ["GITHUB_TOKEN"]
+
+[skills]
+include = ["code-review"]
 ```
 
-That's it. Your Claude project is now an agent.
+Drop this into any project. That's it — it's an agent now.
 
 ## What aide handles
 
-| Feature | Description |
-|---------|-------------|
-| **Budget** | Token limits per task. Auto-retry with remaining budget. |
-| **Vault** | age-encrypted secrets injected as env vars at spawn time. |
-| **Triggers** | GitHub Issues, cron, manual. Daemon polls and dispatches. |
-| **Hooks** | on_spawn, on_complete. Inject vault, commit memory, notify. |
-| **Memory** | Auto-compact when threshold is hit. Per-agent memory namespace. |
-| **Teams** | Import/export agent templates via git. |
+| Concern | Single agent | Team (HQ) |
+|---------|-------------|-----------|
+| **Budget** | Token limits, auto-retry | Per-agent budgets |
+| **Vault** | Encrypted secrets → env vars | HQ controls who gets what |
+| **Memory** | Per-agent compaction | Centralized at HQ, agents stateless |
+| **Skills** | Injected at spawn | Policy controls injection |
+| **Routing** | — | Policy rules or frontier fallback |
+| **Telemetry** | — | Token usage, success rate, events |
 
-## Philosophy
+## What aide does NOT do
 
-Claude Code is already a great agent runtime. aide doesn't replace it.
-
-aide is the **lifecycle manager** — who to wake up, how much to spend, what secrets to give, when to stop.
+aide doesn't replace Claude Code. Claude Code does all the thinking, coding, and reasoning. aide manages the lifecycle — who works on what, with what context, under what budget.
 
 > Aidefile is to Claude Code what Dockerfile is to Linux.
+
+## aide vs Claude Code native
+
+| Feature | Claude Code (native) | aide (adds) |
+|---------|---------------------|-------------|
+| Run a task | `claude -p "task"` | `aide run agent "task"` — with budget + vault |
+| Subagents | `.claude/agents/*.md` | `aide dispatch` — token-isolated processes |
+| Memory | `~/.claude/projects/*/memory/` | HQ/memory/ — centralized SSOT |
+| Secrets | env vars, manual | Vault — encrypted, gated by HQ |
+| Routing | you decide | Policy — deterministic rules |
 
 ## Next steps
 
 - [Installation](./getting-started/install.md) — get the binary
 - [Quick Start](./getting-started/quickstart.md) — your first agent in 2 minutes
-- [Concepts](./getting-started/concepts.md) — agents, Aidefiles, registry
+- [Concepts](./getting-started/concepts.md) — agents, Aidefiles, single vs team

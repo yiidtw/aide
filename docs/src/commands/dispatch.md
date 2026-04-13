@@ -54,6 +54,25 @@ Blocks until the target issue closes, then prints the bounded summary extracted 
 
 On success, prints the content of the `<aide-summary>` block from the issue's closing comment. This is the bounded summary controlled by the sub-agent's `[output]` config.
 
+## aide cancel
+
+```bash
+aide cancel <issue-ref>
+aide cancel owner/repo#42
+aide cancel https://github.com/org/repo/issues/42
+```
+
+Stops a running dispatch: sends SIGTERM to the background worker, posts a cancellation comment, and closes the issue.
+
+### What it does
+
+1. Looks up the worker PID from the local SQLite state database
+2. Sends `SIGTERM` to kill the `claude -p` process
+3. Posts `STATUS: cancelled (by user)` as an issue comment
+4. Closes the GitHub issue
+5. Marks the run as cancelled in the state database
+6. Logs a `cancelled` event to `~/.aide/events.jsonl`
+
 ## aide events
 
 ```bash
@@ -102,6 +121,7 @@ Starts a local HTTP API server for programmatic access to aide state.
 | `/api/heartbeat` | GET | Last heartbeat timestamp from daemon |
 | `/api/stats` | GET | Aggregate stats (today's runs, tokens, agents) |
 | `/api/health` | GET | Health check (returns 200 if daemon is running) |
+| `/api/telemetry` | GET | Dispatch telemetry summary (compression ratio, token savings) |
 
 ## aide stats
 

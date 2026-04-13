@@ -30,7 +30,9 @@
 - [aide import / export](./commands/import-export.md)
 - [aide vault](./commands/vault.md)
 - [aide mcp](./commands/mcp.md)
-- [aide dispatch / wait / events](./commands/dispatch.md)
+- [aide dispatch / wait / cancel / events](./commands/dispatch.md)
+- [aide dashboard](./commands/dashboard.md)
+- [aide emit-claude-agents](./commands/emit.md)
 
 # Architecture
 

@@ -92,6 +92,9 @@ enum Commands {
         /// Persona name
         #[arg(long)]
         persona: Option<String>,
+        /// Initialize as a team HQ (creates <name>-hq coordinator structure)
+        #[arg(long)]
+        team: bool,
     },
 
     /// Start MCP stdio server for LLM tool integration
@@ -205,7 +208,7 @@ async fn main() -> Result<()> {
         Commands::Down => daemon::stop()?,
         Commands::Import { url } => cmd_import(&url)?,
         Commands::Export { to, name } => cmd_export(&to, name.as_deref())?,
-        Commands::Init { persona } => cmd_init(persona.as_deref())?,
+        Commands::Init { persona, team } => cmd_init(persona.as_deref(), team)?,
         Commands::Mcp => mcp::serve()?,
         Commands::Vault { command } => match command {
             VaultCommands::Get { key } => {
@@ -457,8 +460,13 @@ fn cmd_export(to: &str, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_init(persona: Option<&str>) -> Result<()> {
+fn cmd_init(persona: Option<&str>, team: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+
+    if team {
+        return cmd_init_team(&cwd, persona);
+    }
+
     let aidefile_path = cwd.join("Aidefile");
     if aidefile_path.exists() {
         anyhow::bail!("Aidefile already exists in current directory");
@@ -498,6 +506,62 @@ on = "manual"
     std::fs::write(&aidefile_path, content)?;
     println!("✓ Created Aidefile in {}", cwd.display());
     println!("  Edit it, then run `aide register .` to activate");
+    Ok(())
+}
+
+fn cmd_init_team(cwd: &std::path::Path, persona: Option<&str>) -> Result<()> {
+    let dir_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+
+    // Derive team name: strip -hq suffix if present, or use as-is
+    let team_name = dir_name.strip_suffix("-hq").unwrap_or(dir_name);
+    let hq_name = persona.unwrap_or(dir_name);
+
+    // Create .claude/agents/ for subagent wrappers
+    let agents_dir = cwd.join(".claude").join("agents");
+    std::fs::create_dir_all(&agents_dir)?;
+
+    // Create CLAUDE.md with team coordination instructions
+    let claude_md_path = cwd.join("CLAUDE.md");
+    if !claude_md_path.exists() {
+        let claude_md = format!(
+            r#"# {team_name} Team HQ
+
+This is the coordinator repo for the {team_name} team.
+Do NOT do the work yourself — dispatch to member agents via `aide dispatch`.
+
+## Dispatch workflow
+1. `aide dispatch <agent> "<task>"` — dispatch work to a member
+2. `aide wait <issue-ref>` — wait for result
+3. `aide events` — check orchestration timeline
+4. `aide cancel <issue-ref>` — cancel if stuck
+
+## Member agents
+Run `aide list` to see registered agents.
+Run `aide emit-claude-agents` to regenerate `.claude/agents/` wrappers.
+"#
+        );
+        std::fs::write(&claude_md_path, claude_md)?;
+    }
+
+    // Create .gitignore
+    let gitignore_path = cwd.join(".gitignore");
+    if !gitignore_path.exists() {
+        std::fs::write(
+            &gitignore_path,
+            ".aide/\n.claude/\n!.claude/agents/\n!.claude/settings.json\n",
+        )?;
+    }
+
+    println!("✓ Initialized {hq_name} as team HQ");
+    println!("  Created: .claude/agents/, CLAUDE.md, .gitignore");
+    println!();
+    println!("  Next steps:");
+    println!("    1. Register member agents: aide register /path/to/{team_name}-<member>");
+    println!("    2. Generate wrappers:      aide emit-claude-agents");
+    println!("    3. Start daemon:           aide up");
     Ok(())
 }
 

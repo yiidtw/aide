@@ -2,6 +2,7 @@ mod aidefile;
 mod api;
 mod budget;
 mod daemon;
+mod dashboard;
 mod db;
 mod dispatch;
 mod events;
@@ -156,6 +157,9 @@ enum Commands {
 
     /// Uninstall aide system service
     UninstallService,
+
+    /// Live TUI dashboard
+    Dashboard,
 }
 
 #[derive(Subcommand)]
@@ -228,6 +232,7 @@ async fn main() -> Result<()> {
         Commands::Status => cmd_status()?,
         Commands::InstallService => cmd_install_service()?,
         Commands::UninstallService => cmd_uninstall_service()?,
+        Commands::Dashboard => dashboard::run_dashboard()?,
     }
 
     Ok(())

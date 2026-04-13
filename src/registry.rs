@@ -20,11 +20,17 @@ pub struct Config {
 pub struct DaemonConfig {
     #[serde(default = "DaemonConfig::default_poll_interval")]
     pub poll_interval: String,
+    /// Maximum number of concurrent agent tasks (default 8).
+    #[serde(default = "DaemonConfig::default_max_concurrent")]
+    pub max_concurrent: usize,
 }
 
 impl DaemonConfig {
     fn default_poll_interval() -> String {
         "60s".into()
+    }
+    fn default_max_concurrent() -> usize {
+        8
     }
 }
 
@@ -32,6 +38,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             poll_interval: Self::default_poll_interval(),
+            max_concurrent: Self::default_max_concurrent(),
         }
     }
 }

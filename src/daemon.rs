@@ -3,16 +3,33 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::aidefile;
 use crate::registry;
+
+/// Per-agent work item produced by the tick scan phase.
+enum Work {
+    Issues {
+        agent_name: String,
+        agent_dir: PathBuf,
+        af: aidefile::Aidefile,
+    },
+    Cron {
+        agent_name: String,
+        agent_dir: PathBuf,
+        cron_expr: String,
+    },
+}
 
 /// Start the aide daemon loop.
 pub async fn start() -> Result<()> {
     let config = registry::load()?;
     let poll_secs = parse_interval(&config.daemon.poll_interval);
+    let max_concurrent = config.daemon.max_concurrent;
 
-    tracing::info!(poll_secs, agents = config.agents.len(), "aide daemon started");
+    tracing::info!(poll_secs, max_concurrent, agents = config.agents.len(), "aide daemon started");
 
     // Write PID file
     let pid_path = registry::aide_dir().join("daemon.pid");
@@ -20,11 +37,19 @@ pub async fn start() -> Result<()> {
 
     let _guard = PidGuard(pid_path.clone());
 
-    // Track last cron fire time per agent to avoid double-dispatch
-    let mut last_cron_fire: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    // Global concurrency semaphore — bounds total parallel agent tasks.
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
+
+    // Per-agent locks — only ONE run per agent at a time.
+    let agent_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // Track last cron fire time per agent to avoid double-dispatch.
+    let last_cron_fire: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     loop {
-        if let Err(e) = tick(&config, &mut last_cron_fire).await {
+        if let Err(e) = tick(&config, &semaphore, &agent_locks, &last_cron_fire).await {
             tracing::error!("Tick error: {e:#}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(poll_secs)).await;
@@ -47,11 +72,16 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
-/// One tick: check all agents for pending triggers.
+/// One tick: scan all agents for pending triggers, then dispatch concurrently.
 async fn tick(
     config: &registry::Config,
-    last_cron_fire: &mut HashMap<String, chrono::DateTime<chrono::Utc>>,
+    semaphore: &Arc<Semaphore>,
+    agent_locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    last_cron_fire: &Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>>,
 ) -> Result<()> {
+    // ── Phase 1: Scan — collect work items (lightweight, sequential) ──
+    let mut work_items: Vec<Work> = Vec::new();
+
     for agent in &config.agents {
         let path = PathBuf::from(shellexpand::tilde(&agent.path).as_ref());
         if !aidefile::exists(&path) {
@@ -66,13 +96,71 @@ async fn tick(
         };
 
         if af.trigger.is_issue() {
-            check_github_issues(&agent.name, &path, &af).await?;
+            work_items.push(Work::Issues {
+                agent_name: agent.name.clone(),
+                agent_dir: path,
+                af,
+            });
         } else if let Some(cron_expr) = af.trigger.cron_expr() {
-            check_cron(&agent.name, &path, cron_expr, last_cron_fire)?;
+            work_items.push(Work::Cron {
+                agent_name: agent.name.clone(),
+                agent_dir: path,
+                cron_expr: cron_expr.to_string(),
+            });
         }
         // manual triggers: skip (only via `aide run`)
     }
+
+    // ── Phase 2: Dispatch — spawn concurrent tasks ──
+    let mut handles = Vec::new();
+
+    for item in work_items {
+        let sem = Arc::clone(semaphore);
+        let locks = Arc::clone(agent_locks);
+        let cron_fire = Arc::clone(last_cron_fire);
+
+        let handle = tokio::spawn(async move {
+            match item {
+                Work::Issues { agent_name, agent_dir, af } => {
+                    let agent_lock = get_agent_lock(&locks, &agent_name).await;
+                    let _guard = agent_lock.lock().await;
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    if let Err(e) = check_github_issues(&agent_name, &agent_dir, &af).await {
+                        tracing::error!(agent = agent_name, "Issue check failed: {e:#}");
+                    }
+                }
+                Work::Cron { agent_name, agent_dir, cron_expr } => {
+                    let agent_lock = get_agent_lock(&locks, &agent_name).await;
+                    let _guard = agent_lock.lock().await;
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    if let Err(e) = check_cron(&agent_name, &agent_dir, &cron_expr, &cron_fire).await {
+                        tracing::error!(agent = agent_name, "Cron check failed: {e:#}");
+                    }
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all dispatched tasks to complete before the next tick.
+    for handle in handles {
+        if let Err(e) = handle.await {
+            tracing::error!("Task join error: {e:#}");
+        }
+    }
+
     Ok(())
+}
+
+/// Get or create a per-agent lock.
+async fn get_agent_lock(
+    locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    agent_name: &str,
+) -> Arc<Mutex<()>> {
+    let mut map = locks.lock().await;
+    map.entry(agent_name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 /// Poll GitHub Issues for tasks addressed to this agent.
@@ -117,8 +205,15 @@ async fn check_github_issues(
 
         tracing::info!(agent_name, issue = number, "Dispatching issue");
 
-        // Run the task
-        match crate::runner::run(agent_dir, &task) {
+        // Run the task via spawn_blocking (runner::run is synchronous)
+        let dir = agent_dir.clone();
+        let task_clone = task.clone();
+        let run_result = tokio::task::spawn_blocking(move || {
+            crate::runner::run(&dir, &task_clone)
+        })
+        .await?;
+
+        match run_result {
             Ok(result) => {
                 // Post the bounded summary (built by runner, capped per Aidefile [output])
                 let _ = std::process::Command::new("gh")
@@ -147,11 +242,11 @@ async fn check_github_issues(
 }
 
 /// Check if cron trigger should fire now.
-fn check_cron(
+async fn check_cron(
     agent_name: &str,
     agent_dir: &PathBuf,
     cron_expr: &str,
-    last_fire: &mut HashMap<String, chrono::DateTime<chrono::Utc>>,
+    last_fire: &Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>>,
 ) -> Result<()> {
     use std::str::FromStr;
 
@@ -163,21 +258,32 @@ fn check_cron(
         .map_err(|e| anyhow::anyhow!("Invalid cron expression '{}': {}", cron_expr, e))?;
 
     let now = chrono::Utc::now();
-    let last = last_fire.get(agent_name).copied().unwrap_or(now);
 
-    // Check if there's a scheduled time between last check and now
-    let should_fire = schedule.after(&last).take(1).any(|t| t <= now);
+    // Check and update last fire time atomically
+    {
+        let mut fire_map = last_fire.lock().await;
+        let last = fire_map.get(agent_name).copied().unwrap_or(now);
 
-    if !should_fire {
-        return Ok(());
+        let should_fire = schedule.after(&last).take(1).any(|t| t <= now);
+        if !should_fire {
+            return Ok(());
+        }
+
+        fire_map.insert(agent_name.to_string(), now);
     }
 
     tracing::info!(agent_name, cron_expr, "Cron trigger fired");
-    last_fire.insert(agent_name.to_string(), now);
 
     let task = format!("Scheduled run (cron: {cron_expr}). Check for pending work and execute.");
 
-    match crate::runner::run(agent_dir, &task) {
+    let dir = agent_dir.clone();
+    let task_clone = task.clone();
+    let run_result = tokio::task::spawn_blocking(move || {
+        crate::runner::run(&dir, &task_clone)
+    })
+    .await?;
+
+    match run_result {
         Ok(result) => {
             if result.success {
                 tracing::info!(agent_name, tokens = result.tokens_used, "Cron task completed");
